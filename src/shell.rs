@@ -14,6 +14,22 @@ pub struct Drive {
     pub free: u64,
 }
 
+/// Sidebar places; the display name comes from `i18n::Strings::known_folder`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnownFolder {
+    Home,
+    Desktop,
+    Downloads,
+    Documents,
+    Pictures,
+    Music,
+    Videos,
+}
+
+impl KnownFolder {
+    pub const COUNT: usize = 7;
+}
+
 #[cfg(windows)]
 pub use win::*;
 
@@ -99,15 +115,15 @@ mod win {
             .collect()
     }
 
-    pub fn known_folders() -> Vec<(&'static str, PathBuf)> {
-        let ids: [(&str, GUID); 7] = [
-            ("Home", FOLDERID_Profile),
-            ("Desktop", FOLDERID_Desktop),
-            ("Download", FOLDERID_Downloads),
-            ("Documenti", FOLDERID_Documents),
-            ("Immagini", FOLDERID_Pictures),
-            ("Musica", FOLDERID_Music),
-            ("Video", FOLDERID_Videos),
+    pub fn known_folders() -> Vec<(KnownFolder, PathBuf)> {
+        let ids: [(KnownFolder, GUID); KnownFolder::COUNT] = [
+            (KnownFolder::Home, FOLDERID_Profile),
+            (KnownFolder::Desktop, FOLDERID_Desktop),
+            (KnownFolder::Downloads, FOLDERID_Downloads),
+            (KnownFolder::Documents, FOLDERID_Documents),
+            (KnownFolder::Pictures, FOLDERID_Pictures),
+            (KnownFolder::Music, FOLDERID_Music),
+            (KnownFolder::Videos, FOLDERID_Videos),
         ];
         ids.into_iter()
             .filter_map(|(name, id)| unsafe {
@@ -241,8 +257,8 @@ mod fallback {
     pub fn drives() -> Vec<Drive> {
         vec![Drive { root: "/".into(), label: String::new(), total: 0, free: 0 }]
     }
-    pub fn known_folders() -> Vec<(&'static str, PathBuf)> {
-        std::env::var_os("HOME").map(|h| vec![("Home", PathBuf::from(h))]).unwrap_or_default()
+    pub fn known_folders() -> Vec<(KnownFolder, PathBuf)> {
+        std::env::var_os("HOME").map(|h| vec![(KnownFolder::Home, PathBuf::from(h))]).unwrap_or_default()
     }
     pub fn open(_path: &Path) {}
     pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf]) -> Result<(), ()> {

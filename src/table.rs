@@ -6,6 +6,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::fs::{self, Entry, SortKey};
+use crate::i18n;
 
 pub struct FileTable {
     entries: Vec<Entry>,
@@ -31,11 +32,12 @@ impl FileTable {
             sort_key: SortKey::Name,
             descending: false,
             loading: false,
+            // Names are filled in per render from the current language, see `column`.
             columns: vec![
-                Column::new("name", "Nome").width(px(380.)).min_width(px(120.)).ascending(),
-                Column::new("type", "Tipo").width(px(110.)).sortable(),
-                Column::new("modified", "Modificato").width(px(150.)).sortable(),
-                Column::new("size", "Dimensione").width(px(110.)).text_right().sortable(),
+                Column::new("name", "").width(px(380.)).min_width(px(120.)).ascending(),
+                Column::new("type", "").width(px(110.)).sortable(),
+                Column::new("modified", "").width(px(150.)).sortable(),
+                Column::new("size", "").width(px(110.)).text_right().sortable(),
             ],
         }
     }
@@ -94,8 +96,17 @@ impl TableDelegate for FileTable {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
+        let s = i18n::t(cx);
+        let mut column = self.columns[col_ix].clone();
+        column.name = match COLUMNS[col_ix] {
+            SortKey::Name => s.col_name,
+            SortKey::Type => s.col_type,
+            SortKey::Modified => s.col_modified,
+            SortKey::Size => s.col_size,
+        }
+        .into();
+        column
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -139,9 +150,9 @@ impl TableDelegate for FileTable {
                     .child(div().truncate().child(e.name.clone()))
                     .into_any_element();
             }
-            SortKey::Type if e.is_dir => "Cartella".to_string(),
-            SortKey::Type if e.ext.is_empty() => "File".to_string(),
-            SortKey::Type => format!("File {}", e.ext.to_uppercase()),
+            SortKey::Type if e.is_dir => i18n::t(cx).folder.to_string(),
+            SortKey::Type if e.ext.is_empty() => i18n::t(cx).file.to_string(),
+            SortKey::Type => (i18n::t(cx).file_of_type)(&e.ext.to_uppercase()),
             SortKey::Modified => fs::format_time(e.modified),
             SortKey::Size if e.is_dir => String::new(),
             SortKey::Size => fs::format_size(e.size),

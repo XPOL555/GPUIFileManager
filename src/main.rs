@@ -3,10 +3,11 @@
 
 mod app;
 mod fs;
+mod i18n;
 mod shell;
 mod table;
 
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 
 fn main() {
@@ -20,13 +21,15 @@ fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
         app::bind_keys(cx);
+        i18n::set_language(i18n::Language::default(), cx);
         Theme::change(ThemeMode::Dark, None, cx);
 
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        // The app draws its own title bar (`component::TitleBar`), with the settings menu on the left.
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions { title: Some("FileManager".into()), ..Default::default() }),
-            ..Default::default()
+            titlebar: Some(TitlebarOptions { title: Some("FileManager".into()), ..TitleBar::title_bar_options() }),
+            ..TitleBar::window_options()
         };
         let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
             cx.new(|cx| app::FileManager::new(start, window, cx))

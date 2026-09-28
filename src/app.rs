@@ -5,16 +5,33 @@ use std::path::{Path, PathBuf};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::i18n::{self, Language};
 use crate::table::FileTable;
 use crate::{fs, shell};
 
 actions!(
     file_manager,
-    [OpenSelected, GoBack, GoForward, GoUp, Refresh, NewTab, CloseTab, NextTab, FocusFilter, EditPath, ToggleHidden]
+    [
+        OpenSelected,
+        GoBack,
+        GoForward,
+        GoUp,
+        Refresh,
+        NewTab,
+        CloseTab,
+        NextTab,
+        FocusFilter,
+        EditPath,
+        ToggleHidden,
+        OpenSettings
+    ]
 );
 
 const CONTEXT: &str = "FileManager";
@@ -33,6 +50,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-f", FocusFilter, Some(CONTEXT)),
         KeyBinding::new("ctrl-l", EditPath, Some(CONTEXT)),
         KeyBinding::new("ctrl-h", ToggleHidden, Some(CONTEXT)),
+        KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
     ]);
 }
 
@@ -61,7 +79,7 @@ pub struct FileManager {
     path_input: Entity<InputState>,
     editing_path: bool,
     error: Option<SharedString>,
-    places: Vec<(&'static str, PathBuf)>,
+    places: Vec<(shell::KnownFolder, PathBuf)>,
     drives: Vec<shell::Drive>,
     /// Bumped on each navigation so late results from a previous listing are dropped.
     load_generation: u64,
@@ -71,7 +89,7 @@ pub struct FileManager {
 impl FileManager {
     pub fn new(start: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| TableState::new(FileTable::new(), window, cx).row_selectable(true));
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filtra…"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(i18n::t(cx).filter));
         let path_input = cx.new(|cx| InputState::new(window, cx));
 
         let subscriptions = vec![
@@ -106,6 +124,10 @@ impl FileManager {
                     cx.notify();
                 }
                 _ => {}
+            }),
+            cx.observe_global_in::<i18n::CurrentLanguage>(window, |this, window, cx| {
+                let placeholder = i18n::t(cx).filter;
+                this.filter.update(cx, |f, cx| f.set_placeholder(placeholder, window, cx));
             }),
         ];
 
@@ -362,7 +384,46 @@ impl FileManager {
         cx.notify();
     }
 
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        // The builder runs on every render, so the dialog follows language changes live.
+        window.open_dialog(cx, |dialog, _, cx| {
+            let s = i18n::t(cx);
+            let current = i18n::language(cx);
+            dialog.title(s.settings).w(px(420.)).child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(s.language))
+                    .child(
+                        RadioGroup::vertical("language")
+                            .children(Language::ALL.map(Language::native_name))
+                            .selected_index(Language::ALL.iter().position(|&l| l == current))
+                            .on_click(|ix, _, cx| i18n::set_language(Language::ALL[*ix], cx)),
+                    ),
+            )
+        });
+    }
+
     // ---- rendering --------------------------------------------------------
+
+    /// Custom window title bar (the native one is hidden, see `main`).
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        TitleBar::new().pl_1().child(
+            h_flex()
+                .gap_1()
+                .child(
+                    // On Windows the bar is an HTCAPTION area: an unhandled mouse-down
+                    // enters the native move loop, which swallows the mouse-up and the click.
+                    div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
+                        Button::new("settings")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(gpui_kit::assets::IconName::Menu))
+                            .on_click(cx.listener(|this, _, window, cx| this.open_settings(&OpenSettings, window, cx))),
+                    ),
+                )
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("FileManager")),
+        )
+    }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -385,6 +446,7 @@ impl FileManager {
         let heading = |s: &'static str, cx: &Context<Self>| {
             div().px_3().pt_3().pb_1().text_xs().text_color(cx.theme().muted_foreground).child(s)
         };
+        let s = i18n::t(cx);
 
         let mut col = v_flex()
             .id("sidebar")
@@ -396,11 +458,12 @@ impl FileManager {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.border)
-            .child(heading("RISORSE", cx));
-        for (name, path) in self.places.clone() {
-            col = col.child(item(format!("place-{name}").into(), IconName::Folder, name.into(), path, cx));
+            .child(heading(s.places, cx));
+        for (folder, path) in self.places.clone() {
+            let id = format!("place-{folder:?}").into();
+            col = col.child(item(id, IconName::Folder, s.known_folder(folder).into(), path, cx));
         }
-        col = col.child(heading("UNITÀ", cx));
+        col = col.child(heading(s.drives, cx));
         for d in &self.drives {
             let root = d.root.to_string_lossy().into_owned();
             let label = if d.label.is_empty() { root.clone() } else { format!("{} ({})", d.label, &root[..2]) };
@@ -530,16 +593,17 @@ impl FileManager {
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = self.table.read(cx);
+        let s = i18n::t(cx);
         let (dirs, files) = t.delegate().summary();
         let selected = t
             .selected_row()
             .and_then(|r| t.delegate().entry(r))
             .filter(|e| !e.is_dir)
-            .map(|e| format!(" · selezionato: {}", fs::format_size(e.size)))
+            .map(|e| format!(" · {}: {}", s.selected, fs::format_size(e.size)))
             .unwrap_or_default();
         let text = match &self.error {
             Some(err) => err.to_string(),
-            None => format!("{dirs} cartelle, {files} file{selected}"),
+            None => format!("{}{selected}", (s.counts)(dirs, files)),
         };
         h_flex()
             .h(px(24.))
@@ -560,7 +624,7 @@ impl Focusable for FileManager {
 
 impl Render for FileManager {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        v_flex()
             .id("file-manager")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
@@ -575,6 +639,7 @@ impl Render for FileManager {
             .on_action(cx.listener(Self::focus_filter))
             .on_action(cx.listener(Self::edit_path))
             .on_action(cx.listener(Self::toggle_hidden))
+            .on_action(cx.listener(Self::open_settings))
             // Mouse back/forward buttons.
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx)))
@@ -582,30 +647,32 @@ impl Render for FileManager {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_sm()
-            .child(self.render_sidebar(cx))
+            .child(self.render_title_bar(cx))
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.render_tabs(cx))
-                    .child(self.render_address_bar(cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                                if ev.button == MouseButton::Right {
-                                    this.table.update(cx, |t, cx| t.set_right_clicked_row(None, cx));
-                                }
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(|this, _, _, cx| this.on_table_right_mouse_down(cx)),
-                            )
-                            .child(DataTable::new(&self.table).bordered(false).small()),
-                    )
-                    .child(self.render_status(cx)),
+                h_flex().flex_1().min_h_0().child(self.render_sidebar(cx)).child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(self.render_tabs(cx))
+                        .child(self.render_address_bar(cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                    if ev.button == MouseButton::Right {
+                                        this.table.update(cx, |t, cx| t.set_right_clicked_row(None, cx));
+                                    }
+                                }))
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(|this, _, _, cx| this.on_table_right_mouse_down(cx)),
+                                )
+                                .child(DataTable::new(&self.table).bordered(false).small()),
+                        )
+                        .child(self.render_status(cx)),
+                ),
             )
     }
 }

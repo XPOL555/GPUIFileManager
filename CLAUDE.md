@@ -9,7 +9,8 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 
 ## Layout
 - `src/main.rs`: bootstrap (assets, dark theme, window, quit on last window closed)
-- `src/app.rs`: `FileManager` view (sidebar, tabs, address bar/breadcrumb, filter, status bar), actions and keybindings (context `FileManager`)
+- `src/app.rs`: `FileManager` view (custom title bar with the settings dialog, sidebar, tabs, address bar/breadcrumb, filter, status bar), actions and keybindings (context `FileManager`)
+- `src/i18n.rs`: UI strings (English, Italian). The language is a GPUI global read at render time; `set_language` switches it live
 - `src/table.rs`: `FileTable`, a `TableDelegate` that owns the folder snapshot plus a filtered and sorted `rows` index
 - `src/fs.rs`: `list()` (std `read_dir`, no recursion), natural sort, size and date formatting
 - `src/shell.rs`: Win32/COM (drives, known folders, `ShellExecuteW`, native `IContextMenu`)
@@ -19,6 +20,8 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - Import everything through `gpui_kit::*` and `gpui_kit::component::*`. Never add `gpui` directly: the versions must match the ones gpui-kit pins.
 - Its API changes often. Check the sources in `~/.cargo/registry/src/*/gpui-component-0.7.0` and `gpui-base-0.7.0` before assuming a signature. `.when()` needs `prelude::FluentBuilder`, `.small()` needs `Sizable`, `.disabled()` needs `Disableable`.
 - `shell::show_context_menu` runs a nested Win32 modal loop. Call it only from a `cx.spawn` task and never while holding a GPUI borrow (`update`/`read`), otherwise GPUI's wndproc re-enters and panics.
+- Every user-visible string goes through `i18n::t(cx)`, with both languages filled in. State that caches a string (input placeholders) must observe `i18n::CurrentLanguage`.
+- The title bar is a Windows `HTCAPTION` drag area: an unhandled left mouse-down there starts the native move loop and the click never arrives. Wrap interactive title bar elements in a div that calls `cx.stop_propagation()` on mouse-down.
 - Filesystem I/O goes on `cx.background_spawn`. Use `load_generation` to discard stale results.
 - Commits: never add `Co-Authored-By: Claude …` or other AI attribution lines to commit messages or PRs. The author is Paolo only.
 
