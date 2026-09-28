@@ -20,6 +20,11 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - Its API changes often. Check the sources in `~/.cargo/registry/src/*/gpui-component-0.7.0` and `gpui-base-0.7.0` before assuming a signature. `.when()` needs `prelude::FluentBuilder`, `.small()` needs `Sizable`, `.disabled()` needs `Disableable`.
 - `shell::show_context_menu` runs a nested Win32 modal loop. Call it only from a `cx.spawn` task and never while holding a GPUI borrow (`update`/`read`), otherwise GPUI's wndproc re-enters and panics.
 - Filesystem I/O goes on `cx.background_spawn`. Use `load_generation` to discard stale results.
+- Commits: never add `Co-Authored-By: Claude …` or other AI attribution lines to commit messages or PRs. The author is Paolo only.
+
+## Release
+- `.github/workflows/release.yml` builds on `windows-latest` only, and only on `v*` tags. It publishes a GitHub Release with `filemanager.exe` plus a zip.
+- To release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z`, `git push origin main vX.Y.Z`.
 
 ## Status / TODO
 - [ ] Verify the native context menu by hand (including the "Send to" / "Open with" submenus via the subclass proc)

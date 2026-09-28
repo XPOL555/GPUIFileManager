@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "filemanager-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/filemanager.exe dist/filemanager.exe
+          Compress-Archive -Path target/release/filemanager.exe, README.md -DestinationPath "dist/$name.zip"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/filemanager.exe
+            dist/*.zip
