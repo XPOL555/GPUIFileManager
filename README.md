@@ -16,6 +16,8 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 - Instant filter and sortable columns (natural sort)
 - Native Windows shell context menu
 - Folder listing on background threads; stale results are discarded
+- Custom title bar with a settings dialog (☰ or `Ctrl+,`)
+- English and Italian UI, switchable at runtime
 
 ## Keyboard shortcuts
 
@@ -30,6 +32,7 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 | `Ctrl+F` | Focus filter |
 | `Ctrl+L` | Edit path |
 | `Ctrl+H` | Toggle hidden files |
+| `Ctrl+,` | Settings |
 
 ## Building
 
@@ -49,3 +52,7 @@ cargo build --release     # optimized build, no console window
 - [ ] Real shell icons with a bounded cache
 - [ ] Persistent bookmarks and tabs
 - [ ] Search through the Everything SDK
+
+## License
+
+[MIT](LICENSE)

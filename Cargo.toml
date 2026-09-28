@@ -3,7 +3,8 @@ name = "filemanager"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight, fast file manager for Windows with bounded memory use"
-repository = "https://github.com/XPOL555/GPUIFileNamanger"
+license = "MIT"
+repository ="https://github.com/XPOL555/GPUIFileNamanger"
 publish = false
 
 [dependencies]
