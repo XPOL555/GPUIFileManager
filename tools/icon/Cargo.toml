@@ -1,0 +1,12 @@
+[package]
+name = "icon"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: not part of the app build.
+[workspace]
+
+[dependencies]
+resvg = "0.45"
+ico = "0.4"

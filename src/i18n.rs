@@ -1,14 +1,18 @@
-//! UI strings. The language is a GPUI global that views read while rendering,
+//! UI strings. The language lives in `Settings`, which views read while rendering,
 //! so `set_language` re-translates every open window in place.
 
 use gpui_kit::*;
+use serde::{Deserialize, Serialize};
 
+use crate::settings::Settings;
 use crate::shell::KnownFolder;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
     #[default]
+    #[serde(rename = "en")]
     English,
+    #[serde(rename = "it")]
     Italian,
 }
 
@@ -39,19 +43,18 @@ impl Language {
     }
 }
 
-/// Observe it with `cx.observe_global_in` to update state that caches strings (input placeholders).
-pub struct CurrentLanguage(Language);
-
-impl Global for CurrentLanguage {}
-
 pub fn language(cx: &App) -> Language {
-    cx.try_global::<CurrentLanguage>().map(|l| l.0).unwrap_or_default()
+    cx.try_global::<Settings>().map(|s| s.language).unwrap_or_default()
+}
+
+/// Applies the language stored in `Settings` to gpui-component's own strings. Call once at startup.
+pub fn init(cx: &App) {
+    gpui_kit::component::set_locale(language(cx).code());
 }
 
 pub fn set_language(language: Language, cx: &mut App) {
-    cx.set_global(CurrentLanguage(language));
     gpui_kit::component::set_locale(language.code());
-    cx.refresh_windows();
+    Settings::update(cx, |s| s.language = language);
 }
 
 /// Strings for the current language.
@@ -76,6 +79,14 @@ pub struct Strings {
     pub selected: &'static str,
     pub settings: &'static str,
     pub language: &'static str,
+    pub open: &'static str,
+    pub open_new_tab: &'static str,
+    pub open_new_window: &'static str,
+    pub copy_path: &'static str,
+    pub properties: &'static str,
+    pub refresh: &'static str,
+    pub show_hidden: &'static str,
+    pub more_options: &'static str,
     known_folders: [&'static str; KnownFolder::COUNT],
 }
 
@@ -104,6 +115,14 @@ static EN: Strings = Strings {
     selected: "selected",
     settings: "Settings",
     language: "Language",
+    open: "Open",
+    open_new_tab: "Open in new tab",
+    open_new_window: "Open in new window",
+    copy_path: "Copy path",
+    properties: "Properties",
+    refresh: "Refresh",
+    show_hidden: "Show hidden files",
+    more_options: "Show more options",
     known_folders: ["Home", "Desktop", "Downloads", "Documents", "Pictures", "Music", "Videos"],
 };
 
@@ -122,5 +141,13 @@ static IT: Strings = Strings {
     selected: "selezionato",
     settings: "Impostazioni",
     language: "Lingua",
+    open: "Apri",
+    open_new_tab: "Apri in una nuova scheda",
+    open_new_window: "Apri in una nuova finestra",
+    copy_path: "Copia percorso",
+    properties: "Proprietà",
+    refresh: "Aggiorna",
+    show_hidden: "Mostra file nascosti",
+    more_options: "Mostra altre opzioni",
     known_folders: ["Home", "Desktop", "Download", "Documenti", "Immagini", "Musica", "Video"],
 };

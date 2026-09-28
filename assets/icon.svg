@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4C7DFF"/>
+      <stop offset="1" stop-color="#3525A8"/>
+    </linearGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7B733"/>
+      <stop offset="1" stop-color="#D98A0B"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE38F"/>
+      <stop offset="1" stop-color="#FDBA2C"/>
+    </linearGradient>
+  </defs>
+  <!-- Tile -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <!-- Folder back, with its tab -->
+  <path d="M48 76a14 14 0 0 1 14-14h42a14 14 0 0 1 10.6 4.8L126 80h68a14 14 0 0 1 14 14v94a14 14 0 0 1-14 14H62a14 14 0 0 1-14-14Z" fill="url(#back)"/>
+  <!-- Folder front and its shadow -->
+  <path d="M40 116a14 14 0 0 1 14-14h148a14 14 0 0 1 14 14v76a14 14 0 0 1-14 14H54a14 14 0 0 1-14-14Z" fill="#1B1464" opacity=".25"/>
+  <path d="M40 112a14 14 0 0 1 14-14h148a14 14 0 0 1 14 14v76a14 14 0 0 1-14 14H54a14 14 0 0 1-14-14Z" fill="url(#front)"/>
+  <!-- Bolt: speed -->
+  <path d="M138 110 102 158h24l-12 38 44-54h-24l16-32Z" fill="#2B2594"/>
+</svg>

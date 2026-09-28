@@ -52,6 +52,10 @@ impl FileTable {
         self.rebuild();
     }
 
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.rebuild();

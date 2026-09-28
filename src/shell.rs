@@ -30,6 +30,17 @@ impl KnownFolder {
     pub const COUNT: usize = 7;
 }
 
+/// A point in physical screen pixels, as Win32 reports the cursor.
+pub type ScreenPoint = (i32, i32);
+
+/// Native handle of a window, e.g. a GPUI `Window`.
+pub fn hwnd(window: &impl raw_window_handle::HasWindowHandle) -> Option<isize> {
+    match window.window_handle().ok()?.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 #[cfg(windows)]
 pub use win::*;
 
@@ -39,7 +50,8 @@ mod win {
     use std::cell::RefCell;
     use std::os::windows::ffi::OsStrExt;
 
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
     use windows::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
     };
@@ -58,10 +70,12 @@ mod win {
         SHCreateShellItemArrayFromIDLists, SHGetKnownFolderPath, SHParseDisplayName,
         SetWindowSubclass, ShellExecuteW,
     };
+    use windows::Win32::UI::Shell::{SHOP_FILEPATH, SHObjectProperties};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_RETURNCMD,
-        TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
-        WM_MENUCHAR, WM_MENUSELECT,
+        CreatePopupMenu, DestroyMenu, GA_ROOT, GetAncestor, GetCursorPos, GetWindowRect, SW_SHOWNORMAL,
+        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
+        WM_MENUSELECT, WindowFromPoint,
     };
     use windows::core::{GUID, Interface, PCSTR, PCWSTR, w};
 
@@ -143,6 +157,50 @@ mod win {
         }
     }
 
+    /// Explorer's Properties sheet. It runs on its own thread, so this returns immediately.
+    pub fn show_properties(path: &Path) {
+        let w = wide(path.as_os_str());
+        unsafe {
+            let _ = SHObjectProperties(None, SHOP_FILEPATH, PCWSTR(w.as_ptr()), PCWSTR::null());
+        }
+    }
+
+    pub fn cursor_pos() -> ScreenPoint {
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
+        (pt.x, pt.y)
+    }
+
+    /// Top-level window under a screen point, or 0.
+    pub fn root_window_at((x, y): ScreenPoint) -> isize {
+        unsafe {
+            let hwnd = WindowFromPoint(POINT { x, y });
+            if hwnd.is_invalid() { 0 } else { GetAncestor(hwnd, GA_ROOT).0 as isize }
+        }
+    }
+
+    /// Moves a top-level window so its top-left corner is at `origin`, keeping its size,
+    /// but inside the work area of the monitor under `anchor` (the cursor): a window
+    /// straddling two monitors with different scale factors gets rescaled by Windows.
+    pub fn move_window(hwnd: isize, (mut x, mut y): ScreenPoint, (ax, ay): ScreenPoint) {
+        let hwnd = HWND(hwnd as _);
+        unsafe {
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut rect);
+            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+            let monitor = MonitorFromPoint(POINT { x: ax, y: ay }, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let work = info.rcWork;
+                x = x.clamp(work.left, (work.right - w).max(work.left));
+                y = y.clamp(work.top, (work.bottom - h).max(work.top));
+            }
+            let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
     thread_local! {
         /// The menu currently shown, so the subclass proc can forward owner-draw
         /// and submenu messages ("Send to", "Open with" are populated lazily).
@@ -183,8 +241,8 @@ mod win {
     }
 
     /// Context menu for `paths`, or the folder background menu of `folder`
-    /// (New, Paste, …) when `paths` is empty. Blocks until the menu closes.
-    pub fn show_context_menu(folder: &Path, paths: &[PathBuf]) -> windows::core::Result<()> {
+    /// (New, Paste, …) when `paths` is empty, shown at `at`. Blocks until the menu closes.
+    pub fn show_context_menu(folder: &Path, paths: &[PathBuf], at: ScreenPoint) -> windows::core::Result<()> {
         unsafe {
             let hwnd = GetActiveWindow();
             let menu: IContextMenu = if paths.is_empty() {
@@ -218,8 +276,7 @@ mod win {
             const FIRST: u32 = 1;
             menu.QueryContextMenu(hmenu, 0, FIRST, 0x7FFF, flags).ok()?;
 
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
+            let pt = POINT { x: at.0, y: at.1 };
             ACTIVE_MENU.set(Some(menu.clone()));
             let _ = SetWindowSubclass(hwnd, Some(menu_subclass), SUBCLASS_ID, 0);
             let cmd = TrackPopupMenuEx(hmenu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None);
@@ -261,7 +318,15 @@ mod fallback {
         std::env::var_os("HOME").map(|h| vec![(KnownFolder::Home, PathBuf::from(h))]).unwrap_or_default()
     }
     pub fn open(_path: &Path) {}
-    pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf]) -> Result<(), ()> {
+    pub fn show_properties(_path: &Path) {}
+    pub fn cursor_pos() -> ScreenPoint {
+        (0, 0)
+    }
+    pub fn root_window_at(_at: ScreenPoint) -> isize {
+        0
+    }
+    pub fn move_window(_hwnd: isize, _origin: ScreenPoint, _anchor: ScreenPoint) {}
+    pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf], _at: ScreenPoint) -> Result<(), ()> {
         Ok(())
     }
 }

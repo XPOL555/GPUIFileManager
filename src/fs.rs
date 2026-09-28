@@ -121,6 +121,35 @@ fn take_number(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
     s
 }
 
+/// Splits address-bar text into the folder to list and the name prefix to match:
+/// `C:\Users\pa` → (`Some("C:\Users\")`, `"pa"`), `C:` → (`None`, `"C:"`).
+pub fn split_for_completion(text: &str) -> (Option<&str>, &str) {
+    match text.rfind(['\\', '/']) {
+        Some(i) => (Some(&text[..=i]), &text[i + 1..]),
+        None => (None, text),
+    }
+}
+
+/// Names of the subfolders of `dir` starting with `prefix` (case-insensitive),
+/// in natural order, at most `limit`. Reads one folder, like `list`.
+pub fn complete_dirs(dir: &Path, prefix: &str, limit: usize) -> Vec<String> {
+    let prefix = prefix.to_lowercase();
+    let Ok(items) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = items
+        .filter_map(Result::ok)
+        .filter(|item| {
+            item.file_type()
+                .map(|t| t.is_dir() || (t.is_symlink() && item.path().is_dir()))
+                .unwrap_or(false)
+        })
+        .map(|item| item.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.to_lowercase().starts_with(&prefix))
+        .collect();
+    names.sort_by(|a, b| natural_cmp(a, b));
+    names.truncate(limit);
+    names
+}
+
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
@@ -146,6 +175,26 @@ mod tests {
         let mut v = vec!["file10", "File2", "file1", "a", "file02b"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, ["a", "file1", "File2", "file02b", "file10"]);
+    }
+
+    #[test]
+    fn completion_split() {
+        assert_eq!(split_for_completion(r"C:\Users\pa"), (Some(r"C:\Users\"), "pa"));
+        assert_eq!(split_for_completion(r"C:\Users\"), (Some(r"C:\Users\"), ""));
+        assert_eq!(split_for_completion("C:"), (None, "C:"));
+        assert_eq!(split_for_completion("C:/tmp/x"), (Some("C:/tmp/"), "x"));
+    }
+
+    #[test]
+    fn completes_only_matching_folders() {
+        let root = std::env::temp_dir().join(format!("fm-complete-{}", std::process::id()));
+        for d in ["Alpha", "alps", "Beta", "alpha10", "alpha2"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("alpha.txt"), "").unwrap();
+        assert_eq!(complete_dirs(&root, "AL", 10), ["Alpha", "alpha2", "alpha10", "alps"]);
+        assert_eq!(complete_dirs(&root, "al", 2), ["Alpha", "alpha2"]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" width="96" alt="FileManager icon"></p>
+
 # FileManager
 
 A lightweight, fast file manager for Windows, written in Rust.
@@ -10,14 +12,15 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 
 ## Features
 
-- Sidebar with known folders and drives
-- Tabs with back/forward history
-- Address bar with breadcrumb, plus editable path mode
+- Sidebar with known folders and drives: click to open in the current tab, double-click (or middle-click) to open in a new tab
+- Tabs with back/forward history. Drag to reorder, drag out of the window to detach into a new window, drag onto another window to move there
+- Address bar with breadcrumb. Click its empty space to type a path, with folder autocompletion (`↑`/`↓` to pick, `Tab` to complete, `Enter` to go)
 - Instant filter and sortable columns (natural sort)
-- Native Windows shell context menu
+- The app's own context menu (open, open in new tab/window, copy path, properties). "Show more options", or `Shift`+right-click, opens Explorer's native menu
 - Folder listing on background threads; stale results are discarded
 - Custom title bar with a settings dialog (☰ or `Ctrl+,`)
 - English and Italian UI, switchable at runtime
+- Settings saved in `%APPDATA%\FileManager\settings.json`
 
 ## Keyboard shortcuts
 
@@ -29,6 +32,7 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 | `F5` | Refresh |
 | `Ctrl+T` / `Ctrl+W` | New tab / Close tab |
 | `Ctrl+Tab` | Next tab |
+| `Ctrl+N` | New window |
 | `Ctrl+F` | Focus filter |
 | `Ctrl+L` | Edit path |
 | `Ctrl+H` | Toggle hidden files |
@@ -42,6 +46,12 @@ Requires Windows and a recent stable Rust toolchain (edition 2024).
 cargo run -- <path>       # start in <path> (default: user profile)
 cargo test                # unit tests
 cargo build --release     # optimized build, no console window
+```
+
+The app icon is drawn in `assets/icon.svg`. After editing it, regenerate `assets/app.ico` (embedded in the exe) and `assets/icon.png`:
+
+```sh
+cargo run --manifest-path tools/icon/Cargo.toml
 ```
 
 ## Roadmap
