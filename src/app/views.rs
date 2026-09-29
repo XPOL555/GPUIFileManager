@@ -10,6 +10,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Siz
 use gpui_kit::prelude::FluentBuilder as _;
 use serde::{Deserialize, Serialize};
 
+use super::folder_prefs::Pref;
 use super::menu::MenuTarget;
 use super::*;
 use crate::icons::{self, IconSize};
@@ -94,31 +95,24 @@ impl ViewMode {
 }
 
 impl FileManager {
+    /// A view picked by hand: the tab's from now on, and the one of new tabs.
     pub(super) fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         if mode == self.view() {
             return;
         }
         // Keep the selected item selected in the new view.
         let keep = self.selected_entry(cx).map(|e| e.name.clone());
-        self.tabs[self.active].view = mode;
+        let tab = &mut self.tabs[self.active];
+        tab.view = mode;
+        tab.picked_view = mode;
         self.table.update(cx, |t, cx| {
             t.delegate_mut().set_tree(mode == ViewMode::Tree);
             t.refresh(cx);
         });
-        let row = keep.and_then(|name| self.table.read(cx).delegate().row_of(&name));
-        self.grid_selected = row;
-        self.table.update(cx, |t, cx| match row {
-            Some(row) if mode.is_table() => {
-                t.set_selected_row(row, cx);
-                t.scroll_to_row(row, cx);
-            }
-            _ => t.clear_selection(cx),
-        });
-        if let Some(row) = row {
-            self.scroll_grid_to(row);
-        }
+        self.reselect(keep, cx);
         self.sync_view_slider(window, cx);
         Settings::update(cx, |s| s.view_mode = mode);
+        self.offer_to_keep(Pref::View, cx);
         self.focus_view(window, cx);
         cx.notify();
     }
@@ -431,24 +425,50 @@ impl FileManager {
     }
 
     /// The info bar's view mode button and its popover: the modes, largest on top,
-    /// beside a vertical slider, like File Pilot.
+    /// beside a vertical slider, like File Pilot. A pin marks the view kept for the
+    /// folder; a right click keeps or forgets it.
     fn render_view_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let s = i18n::t(cx);
         let mode = self.view();
+        let kept = self.view_kept(cx);
         let this = cx.entity().downgrade();
         let slider = self.view_slider.clone();
-        Popover::new("view-mode")
+        let popover = Popover::new("view-mode")
             .anchor(Anchor::BottomRight)
             .trigger(
                 Button::new("view-mode-button")
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(mode.icon()))
-                    .label(s.view_mode(mode)),
+                    .label(s.view_mode(mode))
+                    .when(kept, |b| {
+                        b.tooltip(s.view_kept)
+                            .child(Icon::new(LucideIcon::Pin).xsmall().text_color(cx.theme().primary))
+                    }),
             )
             .content(move |_, _, cx| {
                 let s = i18n::t(cx);
-                let current = this.upgrade().map(|fm| fm.read(cx).view()).unwrap_or_default();
+                let (current, kept) = this
+                    .upgrade()
+                    .map(|fm| {
+                        let fm = fm.read(cx);
+                        (fm.view(), fm.view_kept(cx))
+                    })
+                    .unwrap_or_default();
+                let keep = {
+                    let this = this.clone();
+                    Button::new("keep-view")
+                        .ghost()
+                        .xsmall()
+                        .w_full()
+                        .justify_start()
+                        .icon(Icon::new(LucideIcon::Pin))
+                        .label(s.keep_view)
+                        .selected(kept)
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |fm, cx| fm.toggle_keep_view(cx)).ok();
+                        })
+                };
                 let rows = ViewMode::ALL.iter().rev().map(|&mode| {
                     let this = this.clone();
                     let selected = mode == current;
@@ -477,6 +497,7 @@ impl FileManager {
                             .child(v_flex().w(px(150.)).gap_0p5().children(rows))
                             .child(Slider::new(&slider).vertical().h(px(6. * 28. + 5. * 2.))),
                     )
+                    .child(keep)
                     .child(
                         div()
                             .px_2()
@@ -484,6 +505,15 @@ impl FileManager {
                             .text_color(cx.theme().muted_foreground)
                             .child(s.view_hint),
                     )
-            })
+            });
+        div()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.show_keep_menu(Pref::View, ev.position, window, cx);
+                }),
+            )
+            .child(popover)
     }
 }

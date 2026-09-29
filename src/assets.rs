@@ -30,6 +30,8 @@ gpui_kit::assets::icon_assets!(
         Ellipsis,
         RefreshCw,
         Menu,
+        Pin,
+        PinOff,
     ]
 );
 

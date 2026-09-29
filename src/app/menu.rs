@@ -72,7 +72,7 @@ impl FileManager {
         let folder = self.tab().path.clone();
         let show_hidden = self.table.read(cx).delegate().show_hidden();
         let favorites = self.favorites(cx);
-        let view_focus = if self.view().is_table() { self.table.read(cx).focus_handle(cx) } else { self.grid_focus.clone() };
+        let view_focus = self.view_focus(cx);
         let native_paths = target.native_paths();
 
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
@@ -88,12 +88,14 @@ impl FileManager {
                 }
                 None => menu
                     .item(menu_item(&this, s.refresh, LucideIcon::RefreshCw, |fm, window, cx| fm.refresh(&Refresh, window, cx)))
-                    .item(
-                        menu_item(&this, s.show_hidden, LucideIcon::Eye, |fm, window, cx| {
-                            fm.toggle_hidden(&ToggleHidden, window, cx)
-                        })
-                        .checked(show_hidden),
-                    )
+                    .item({
+                        let (label, icon) = if show_hidden {
+                            (s.hide_hidden, LucideIcon::EyeOff)
+                        } else {
+                            (s.show_hidden, LucideIcon::Eye)
+                        };
+                        menu_item(&this, label, icon, |fm, window, cx| fm.toggle_hidden(&ToggleHidden, window, cx))
+                    })
                     .separator()
                     .map(|menu| open_elsewhere_items(menu, &this, s, &path)),
             };
@@ -126,7 +128,17 @@ impl FileManager {
                     })
                 })
         });
+        self.show_popup(menu, position, window, cx);
+    }
 
+    /// Shows `menu` at `position` (window coordinates) until it is dismissed.
+    pub(super) fn show_popup(
+        &mut self,
+        menu: Entity<PopupMenu>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
             this.context_menu = None;
             cx.notify();
@@ -182,8 +194,8 @@ fn open_elsewhere_items(
     menu.item(menu_item(this, s.open_new_tab, LucideIcon::SquarePlus, move |fm, window, cx| {
         fm.open_tab(tab_path.clone(), window, cx)
     }))
-    .item(menu_item(this, s.open_new_window, LucideIcon::AppWindow, move |fm, _, cx| {
-        let tab = Tab::new(window_path.clone(), fm.view());
+    .item(menu_item(this, s.open_new_window, LucideIcon::AppWindow, move |_, _, cx| {
+        let tab = Tab::new(window_path.clone(), cx);
         cx.defer(move |cx| open_window(vec![tab], None, cx));
     }))
 }

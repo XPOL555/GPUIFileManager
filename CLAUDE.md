@@ -15,6 +15,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `src/app/tabs.rs`: tab strip, drag to reorder / detach / move between windows
 - `src/app/address_bar.rs`: breadcrumb, editable path with folder autocompletion, filter
 - `src/app/views.rs`: `ViewMode` (details, tree, list, M/L/XL icons), icon grid (`uniform_list` of rows of tiles), Ctrl + wheel, preview pane, status bar and info bar with the view picker
+- `src/app/folder_prefs.rs`: sorting (column header click, per tab), view and sorting kept per folder (`Settings::folders`, header / view button right click), the one-time snackbar offering it
 - `src/app/menu.rs`: the app's context menu (files, background, sidebar items) and Explorer's native one
 - `src/drag_preview.rs`: floating pop-up window that follows a dragged tab outside the app's windows
 - `src/icons.rs`: native icons and thumbnails: requests from views, LIFO job queues, worker threads, byte-budgeted LRU caches of `RenderImage`
@@ -23,7 +24,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `src/theme.rs`: dark and light (gpui-component defaults) and dimmed (built here, 5 accents), applied with `Theme::update` + `apply_config`
 - `src/i18n.rs`: UI strings (English, Italian). The language lives in `Settings`; `set_language` switches it live
 - `src/assets.rs`: asset source = gpui-kit's default icons + the extra Lucide icons listed in `icon_assets!`, and the full-color logo
-- `src/table.rs`: `FileTable`, a `TableDelegate` that owns the folder snapshot, the listings of expanded tree folders, and the filtered and sorted rows
+- `src/table.rs`: `FileTable`, a `TableDelegate` that owns the folder snapshot, the listings of expanded tree folders, and the filtered and sorted rows. It renders its own header cells (`render_th`): the table's sort cycle, column selection and column moving are off
 - `src/fs.rs`: `list()` (std `read_dir`, no recursion), natural sort, path completion, size and date formatting
 - `src/shell.rs`: Win32/COM (drives, known folders, `ShellExecuteW`, native `IContextMenu`, properties, window placement)
 - `build.rs` + `assets/app.rc`: embed `assets/app.ico` as icon resource 1 (Explorer shows it, GPUI loads it for every window)

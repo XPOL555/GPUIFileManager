@@ -6,17 +6,29 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, TableDelegate, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::fs::{self, Entry, SortKey};
+use crate::fs::{self, Entry, Sort, SortKey};
 use crate::i18n;
 use crate::icons::{self, IconSize};
+use crate::settings::Settings;
 
 /// Asks the owner to expand (`true`) or collapse a folder of the tree.
 pub type ToggleFolder = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut App)>;
+
+/// A column header was clicked: sort by it, or open the header menu at a window position.
+pub enum HeaderClick {
+    Sort(SortKey),
+    Menu(Point<Pixels>),
+}
+
+/// Handles header clicks. The owner keeps the sorting (per tab, maybe kept for the
+/// folder), so the table's own sort cycle and column selection are off.
+pub type OnHeader = Rc<dyn Fn(HeaderClick, &mut Window, &mut App)>;
 
 /// A table row: entry `index` of the top level (`parent: None`) or of an expanded folder.
 #[derive(Clone)]
@@ -36,10 +48,12 @@ pub struct FileTable {
     rows: Vec<Row>,
     filter: String,
     show_hidden: bool,
-    sort_key: SortKey,
-    descending: bool,
+    sort: Sort,
+    /// The listed folder, to tell whether its sorting is the one kept for it.
+    folder: PathBuf,
     tree: bool,
     on_toggle: Option<ToggleFolder>,
+    on_header: Option<OnHeader>,
     pub loading: bool,
     columns: Vec<Column>,
 }
@@ -56,23 +70,47 @@ impl FileTable {
             rows: Vec::new(),
             filter: String::new(),
             show_hidden: true,
-            sort_key: SortKey::Name,
-            descending: false,
+            sort: Sort::default(),
+            folder: PathBuf::new(),
             tree: false,
             on_toggle: None,
+            on_header: None,
             loading: false,
             // Names are filled in per render from the current language, see `column`.
+            // Not `sortable`: headers sort through `on_header`, see `render_th`.
             columns: vec![
-                Column::new("name", "").width(px(380.)).min_width(px(120.)).ascending(),
-                Column::new("type", "").width(px(110.)).sortable(),
-                Column::new("modified", "").width(px(150.)).sortable(),
-                Column::new("size", "").width(px(110.)).text_right().sortable(),
+                Column::new("name", "").width(px(380.)).min_width(px(120.)),
+                Column::new("type", "").width(px(110.)),
+                Column::new("modified", "").width(px(150.)),
+                Column::new("size", "").width(px(110.)).text_right(),
             ],
         }
     }
 
     pub fn set_on_toggle(&mut self, on_toggle: ToggleFolder) {
         self.on_toggle = Some(on_toggle);
+    }
+
+    pub fn set_on_header(&mut self, on_header: OnHeader) {
+        self.on_header = Some(on_header);
+    }
+
+    pub fn set_folder(&mut self, folder: PathBuf) {
+        self.folder = folder;
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        if self.sort != sort {
+            self.sort = sort;
+            self.rebuild();
+        }
+    }
+
+    /// Widths the user dragged the columns to, so `TableState::refresh` keeps them.
+    pub fn set_widths(&mut self, widths: &[Pixels]) {
+        for (column, &width) in self.columns.iter_mut().zip(widths) {
+            column.width = width;
+        }
     }
 
     /// A new folder listing; tree expansions belong to the previous one and are dropped.
@@ -187,7 +225,7 @@ impl FileTable {
         let mut order: Vec<u32> = (0..list.len() as u32)
             .filter(|&i| self.show_hidden || !list[i as usize].hidden)
             .collect();
-        let (key, desc) = (self.sort_key, self.descending);
+        let (key, desc) = (self.sort.key, self.sort.descending);
         order.sort_by(|&a, &b| fs::compare(&list[a as usize], &list[b as usize], key, desc));
 
         let mut any = false;
@@ -262,15 +300,8 @@ impl TableDelegate for FileTable {
     }
 
     fn column(&self, col_ix: usize, cx: &App) -> Column {
-        let s = i18n::t(cx);
         let mut column = self.columns[col_ix].clone();
-        column.name = match COLUMNS[col_ix] {
-            SortKey::Name => s.col_name,
-            SortKey::Type => s.col_type,
-            SortKey::Modified => s.col_modified,
-            SortKey::Size => s.col_size,
-        }
-        .into();
+        column.name = column_name(COLUMNS[col_ix], cx).into();
         column
     }
 
@@ -278,19 +309,45 @@ impl TableDelegate for FileTable {
         self.loading
     }
 
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) {
-        self.sort_key = COLUMNS[col_ix];
-        self.descending = matches!(sort, ColumnSort::Descending);
-        if matches!(sort, ColumnSort::Default) {
-            self.sort_key = SortKey::Name;
-        }
-        self.rebuild();
+    /// The column name, with an arrow on the sorted column. A click sorts, a right click
+    /// opens the header menu. Bold with a pin when the sorting is the one kept for the folder.
+    fn render_th(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        let key = COLUMNS[col_ix];
+        let sorted = self.sort.key == key;
+        let kept = sorted && Settings::get(cx).folder(&self.folder).sort == Some(self.sort);
+        let theme = cx.theme();
+        let arrow = sorted.then(|| {
+            Icon::new(if self.sort.descending { IconName::ChevronDown } else { IconName::ChevronUp })
+                .xsmall()
+                .text_color(if kept { theme.primary } else { theme.muted_foreground })
+        });
+        let pin = kept.then(|| Icon::new(gpui_kit::assets::IconName::Pin).xsmall().text_color(theme.primary));
+        let (on_sort, on_menu) = (self.on_header.clone(), self.on_header.clone());
+        let tip = i18n::t(cx).sort_kept;
+        h_flex()
+            .id(("th", col_ix))
+            .size_full()
+            .gap_1()
+            .cursor_pointer()
+            // Right-aligned column: the arrow goes left of the name.
+            .when(key == SortKey::Size, |d| d.flex_row_reverse())
+            .when(kept, |d| d.font_weight(FontWeight::SEMIBOLD).text_color(theme.foreground))
+            .child(div().truncate().child(column_name(key, cx)))
+            .children(arrow)
+            .children(pin)
+            .on_click(move |_, window, cx| {
+                if let Some(on_header) = &on_sort {
+                    on_header(HeaderClick::Sort(key), window, cx);
+                }
+            })
+            .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+                // Not the folder background menu of the view around the table.
+                cx.stop_propagation();
+                if let Some(on_header) = &on_menu {
+                    on_header(HeaderClick::Menu(ev.position), window, cx);
+                }
+            })
+            .when(kept, |d| d.tooltip(move |window, cx| Tooltip::new(tip).build(window, cx)))
     }
 
     fn render_td(
@@ -377,6 +434,16 @@ mod tests {
         // A listing that arrives after its folder was collapsed is dropped.
         t.set_children(PathBuf::from(r"C:\r\a"), vec![entry(r"C:\r\a\late", false)]);
         assert_eq!(t.len(), 3);
+    }
+}
+
+fn column_name(key: SortKey, cx: &App) -> &'static str {
+    let s = i18n::t(cx);
+    match key {
+        SortKey::Name => s.col_name,
+        SortKey::Type => s.col_type,
+        SortKey::Modified => s.col_modified,
+        SortKey::Size => s.col_size,
     }
 }
 

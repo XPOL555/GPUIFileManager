@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use gpui_kit::SharedString;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -96,12 +97,30 @@ fn is_hidden(name: &str, _meta: &std::fs::Metadata) -> bool {
     name.starts_with('.')
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SortKey {
+    #[default]
     Name,
     Type,
     Modified,
     Size,
+}
+
+/// Sort column and direction of a listing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sort {
+    pub key: SortKey,
+    pub descending: bool,
+}
+
+impl Sort {
+    /// A click on `key`'s column header: the other direction on the sorted column,
+    /// ascending on any other.
+    pub fn clicked(self, key: SortKey) -> Self {
+        Self { key, descending: self.key == key && !self.descending }
+    }
 }
 
 /// Folders always come first; `descending` only flips the order inside each group.
@@ -210,6 +229,17 @@ mod tests {
         let mut v = vec!["file10", "File2", "file1", "a", "file02b"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, ["a", "file1", "File2", "file02b", "file10"]);
+    }
+
+    #[test]
+    fn header_clicks_flip_only_the_sorted_column() {
+        let by_name = Sort::default();
+        let by_size = by_name.clicked(SortKey::Size);
+        assert_eq!(by_size, Sort { key: SortKey::Size, descending: false });
+        assert_eq!(by_size.clicked(SortKey::Size), Sort { key: SortKey::Size, descending: true });
+        assert_eq!(by_size.clicked(SortKey::Size).clicked(SortKey::Size), by_size);
+        let desc = Sort { key: SortKey::Modified, descending: true };
+        assert_eq!(desc.clicked(SortKey::Name), by_name);
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! Main window. This module holds the window, navigation and actions; the areas of
 //! the window live in submodules: `sidebar` (favorites, drives), `tabs` (tab strip,
 //! dragging tabs between windows), `address_bar`, `views` (view modes, icon grid,
-//! preview pane, info bar), `menu` (context menus) and `about` (About dialog, update check).
+//! preview pane, info bar), `folder_prefs` (sorting, view and sorting kept per folder),
+//! `menu` (context menus) and `about` (About dialog, update check).
 
 mod about;
 mod address_bar;
+mod folder_prefs;
 mod menu;
 mod sidebar;
 mod tabs;
@@ -31,7 +33,7 @@ use gpui_kit::*;
 use crate::drag_preview::DragPreviewWindow;
 use crate::i18n::{self, Language};
 use crate::settings::Settings;
-use crate::table::FileTable;
+use crate::table::{FileTable, HeaderClick};
 use crate::theme::{self, Accent, ThemeChoice};
 use crate::{fs, shell};
 
@@ -99,12 +101,30 @@ pub struct Tab {
     path: PathBuf,
     back: Vec<PathBuf>,
     forward: Vec<PathBuf>,
+    /// View and sorting shown: the ones kept for the folder, else the picked ones.
     view: ViewMode,
+    sort: fs::Sort,
+    /// The last view and sorting picked by hand in this tab.
+    picked_view: ViewMode,
+    picked_sort: fs::Sort,
 }
 
 impl Tab {
-    pub fn new(path: PathBuf, view: ViewMode) -> Self {
-        Self { path, back: Vec::new(), forward: Vec::new(), view }
+    /// A tab on `path`, starting from the view and sorting last picked in any tab.
+    pub fn new(path: PathBuf, cx: &App) -> Self {
+        let settings = Settings::get(cx);
+        let (view, sort) = (settings.view_mode, settings.sort);
+        let mut tab =
+            Self { path, back: Vec::new(), forward: Vec::new(), view, sort, picked_view: view, picked_sort: sort };
+        tab.use_folder_prefs(cx);
+        tab
+    }
+
+    /// On entering a folder: its kept view and sorting, or the picked ones.
+    fn use_folder_prefs(&mut self, cx: &App) {
+        let prefs = Settings::get(cx).folder(&self.path);
+        self.view = prefs.view.unwrap_or(self.picked_view);
+        self.sort = prefs.sort.unwrap_or(self.picked_sort);
     }
 
     fn title(&self) -> SharedString {
@@ -183,6 +203,7 @@ pub struct FileManager {
     /// Bumped on each navigation so late results from a previous listing are dropped.
     load_generation: u64,
     context_menu: Option<menu::OpenMenu>,
+    snackbar: Option<folder_prefs::Snackbar>,
 
     // Address bar (see `address_bar`).
     path_input: Entity<InputState>,
@@ -222,12 +243,29 @@ impl FileManager {
     fn new(tabs: Vec<Tab>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         assert!(!tabs.is_empty(), "a window needs at least one tab");
         let settings = Settings::get(cx).clone();
-        let table = cx.new(|cx| TableState::new(FileTable::new(), window, cx).row_selectable(true));
+        // Headers sort through `sort_by`, not the table's own sort cycle; a click on one
+        // must not select (highlight) its column.
+        let table = cx.new(|cx| {
+            TableState::new(FileTable::new(), window, cx)
+                .row_selectable(true)
+                .col_selectable(false)
+                .col_movable(false)
+                .sortable(false)
+        });
         let this = cx.entity().downgrade();
         table.update(cx, |t, _| {
-            t.delegate_mut().set_on_toggle(Rc::new(move |path, expand, window, cx| {
-                this.update(cx, |fm, cx| fm.toggle_folder(path, expand, window, cx)).ok();
-            }))
+            let d = t.delegate_mut();
+            let toggle = this.clone();
+            d.set_on_toggle(Rc::new(move |path, expand, window, cx| {
+                toggle.update(cx, |fm, cx| fm.toggle_folder(path, expand, window, cx)).ok();
+            }));
+            d.set_on_header(Rc::new(move |click, window, cx| {
+                this.update(cx, |fm, cx| match click {
+                    HeaderClick::Sort(key) => fm.sort_by(key, cx),
+                    HeaderClick::Menu(position) => fm.show_keep_menu(folder_prefs::Pref::Sort, position, window, cx),
+                })
+                .ok();
+            }));
         });
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(i18n::t(cx).filter));
         let path_input = cx.new(|cx| InputState::new(window, cx));
@@ -279,6 +317,7 @@ impl FileManager {
             drives: shell::drives(),
             load_generation: 0,
             context_menu: None,
+            snackbar: None,
             path_input,
             editing_path: false,
             suggestions: Vec::new(),
@@ -314,28 +353,33 @@ impl FileManager {
         self.tab().view
     }
 
+    fn view_focus(&self, cx: &App) -> FocusHandle {
+        if self.view().is_table() { self.table.read(cx).focus_handle(cx) } else { self.grid_focus.clone() }
+    }
+
     /// Keyboard focus to the file view of the current mode.
     fn focus_view(&self, window: &mut Window, cx: &mut App) {
-        if self.view().is_table() {
-            self.table.read(cx).focus_handle(cx).focus(window, cx);
-        } else {
-            self.grid_focus.focus(window, cx);
-        }
+        self.view_focus(cx).focus(window, cx);
     }
 
     // ---- navigation -------------------------------------------------------
 
     /// Navigates the active tab. `record` pushes the current folder on the back stack.
     fn navigate(&mut self, path: PathBuf, record: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = &mut self.tabs[self.active];
-        if path == tab.path {
+        if path == self.tab().path {
             return self.load(None, window, cx);
         }
+        let (view, had_focus) = (self.view(), self.view_focus(cx).contains_focused(window, cx));
+        let tab = &mut self.tabs[self.active];
         let previous = std::mem::replace(&mut tab.path, path);
         if record {
             tab.back.push(previous.clone());
             tab.forward.clear();
         }
+        // The folder may have a view and a sorting of its own.
+        tab.use_folder_prefs(cx);
+        // The snackbar was about the folder being left.
+        self.snackbar = None;
         // Coming back up from a child: reselect the folder we came from.
         let select = previous
             .parent()
@@ -343,12 +387,18 @@ impl FileManager {
             .and(previous.file_name())
             .map(|n| n.to_string_lossy().into_owned());
         self.load(select, window, cx);
+        if self.view() != view {
+            self.sync_view_slider(window, cx);
+            if had_focus {
+                self.focus_view(window, cx);
+            }
+        }
     }
 
     /// Lists the active tab's folder on a background thread.
     fn load(&mut self, select: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.tab().path.clone();
-        let tree = self.view() == ViewMode::Tree;
+        let (tree, sort) = (self.view() == ViewMode::Tree, self.tab().sort);
         self.load_generation += 1;
         let generation = self.load_generation;
         self.error = None;
@@ -359,6 +409,8 @@ impl FileManager {
             let d = t.delegate_mut();
             d.loading = true;
             d.set_tree(tree);
+            d.set_sort(sort);
+            d.set_folder(path.clone());
             d.set_filter("");
             cx.notify();
         });
@@ -447,6 +499,24 @@ impl FileManager {
         self.table.read(cx).delegate().entry(row).cloned()
     }
 
+    /// Selects the top-level item named `name` again after the rows moved (new sorting or
+    /// view), in the current view; nothing if it is gone.
+    fn reselect(&mut self, name: Option<SharedString>, cx: &mut Context<Self>) {
+        let row = name.and_then(|name| self.table.read(cx).delegate().row_of(&name));
+        let table = self.view().is_table();
+        self.grid_selected = row;
+        self.table.update(cx, |t, cx| match row {
+            Some(row) if table => {
+                t.set_selected_row(row, cx);
+                t.scroll_to_row(row, cx);
+            }
+            _ => t.clear_selection(cx),
+        });
+        if let Some(row) = row {
+            self.scroll_grid_to(row);
+        }
+    }
+
     fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
         if self.view().is_table() {
             self.table.update(cx, |t, cx| t.set_selected_row(row, cx));
@@ -482,6 +552,11 @@ impl FileManager {
             // from `set_selected_row` (every left click / arrow key) just to clear its
             // highlight, so it cannot tell "right click on empty space" apart.
             // See `on_table_right_mouse_down`.
+            // `TableState::refresh` resets the widths to the delegate's columns.
+            TableEvent::ColumnWidthsChanged(widths) => {
+                let widths = widths.clone();
+                table.update(cx, |t, _| t.delegate_mut().set_widths(&widths));
+            }
             _ => cx.notify(),
         }
     }
@@ -527,14 +602,13 @@ impl FileManager {
     }
 
     fn new_window(&mut self, _: &NewWindow, _: &mut Window, cx: &mut Context<Self>) {
-        let tab = Tab::new(self.tab().path.clone(), self.view());
+        let tab = Tab::new(self.tab().path.clone(), cx);
         cx.defer(move |cx| open_window(vec![tab], None, cx));
     }
 
     /// Opens `path` in a new tab and activates it.
     fn open_tab(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let view = Settings::get(cx).view_mode;
-        self.insert_tab(Tab::new(path, view), window, cx);
+        self.insert_tab(Tab::new(path, cx), window, cx);
     }
 
     fn insert_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
@@ -569,6 +643,7 @@ impl FileManager {
             return;
         }
         self.active = ix;
+        self.snackbar = None;
         self.sync_view_slider(window, cx);
         self.load(None, window, cx);
         self.focus_view(window, cx);
@@ -793,7 +868,8 @@ impl Render for FileManager {
                                         // Before the files: capture-phase listeners run in paint
                                         // order, and the table's scroller stops the wheel there.
                                         .child(self.zoom_listener(cx))
-                                        .child(content),
+                                        .child(content)
+                                        .children(self.render_snackbar(cx)),
                                 )
                                 .when(self.preview_pane, |d| d.child(self.render_preview_pane(cx))),
                         )

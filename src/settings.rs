@@ -3,7 +3,8 @@
 //! Settings are a GPUI global. Every field has a default and unknown or missing
 //! fields are ignored, so old and new files keep loading as settings are added.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,6 +12,7 @@ use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 
 use crate::app::ViewMode;
+use crate::fs::Sort;
 use crate::i18n::Language;
 use crate::theme::{Accent, ThemeChoice};
 
@@ -30,7 +32,31 @@ pub struct Settings {
     pub sidebar_collapsed: bool,
     /// View mode of new tabs: the last one picked.
     pub view_mode: ViewMode,
+    /// Sorting of new tabs: the last one picked.
+    pub sort: Sort,
     pub preview_pane: bool,
+    /// View and sorting kept for single folders, by `folder_key`. It only grows
+    /// through an explicit "Keep for this folder".
+    pub folders: BTreeMap<String, FolderPrefs>,
+    /// The one-time tips offering to keep a sorting or a view for the folder were shown.
+    pub sort_tip_shown: bool,
+    pub view_tip_shown: bool,
+}
+
+/// What is kept for one folder; `None` follows the tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FolderPrefs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<Sort>,
+}
+
+/// Windows paths are case-insensitive and may come with a trailing separator.
+fn folder_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    key.trim_end_matches('\\').to_string()
 }
 
 impl Default for Settings {
@@ -45,7 +71,11 @@ impl Default for Settings {
             sidebar_width: 230.,
             sidebar_collapsed: false,
             view_mode: ViewMode::default(),
+            sort: Sort::default(),
             preview_pane: false,
+            folders: BTreeMap::new(),
+            sort_tip_shown: false,
+            view_tip_shown: false,
         }
     }
 }
@@ -71,6 +101,23 @@ impl Settings {
 
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
+    }
+
+    /// What is kept for `folder`.
+    pub fn folder(&self, folder: &Path) -> FolderPrefs {
+        self.folders.get(&folder_key(folder)).copied().unwrap_or_default()
+    }
+
+    /// Changes what is kept for `folder`; a folder left with nothing kept is dropped.
+    pub fn edit_folder(&mut self, folder: &Path, f: impl FnOnce(&mut FolderPrefs)) {
+        let key = folder_key(folder);
+        let mut prefs = self.folders.get(&key).copied().unwrap_or_default();
+        f(&mut prefs);
+        if prefs == FolderPrefs::default() {
+            self.folders.remove(&key);
+        } else {
+            self.folders.insert(key, prefs);
+        }
     }
 
     /// Applies `f`, saves the result on a background thread and redraws every window.
@@ -110,7 +157,9 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that glob includes gpui_kit's `test` macro, which shadows `#[test]`.
-    use super::{Language, Settings, ThemeChoice};
+    use super::{Language, Settings, ThemeChoice, ViewMode};
+    use crate::fs::{Sort, SortKey};
+    use std::path::Path;
 
     #[test]
     fn missing_and_unknown_fields_fall_back() {
@@ -120,5 +169,24 @@ mod tests {
         assert_eq!(s.language, Language::Italian);
         assert_eq!(s.theme, ThemeChoice::Light);
         assert!(s.favorites_open);
+    }
+
+    #[test]
+    fn folder_prefs_ignore_case_and_trailing_separator() {
+        let mut s = Settings::default();
+        let sort = Sort { key: SortKey::Modified, descending: true };
+        s.edit_folder(Path::new(r"C:\Users\Me\"), |p| p.sort = Some(sort));
+        s.edit_folder(Path::new(r"c:\users\me"), |p| p.view = Some(ViewMode::List));
+        let prefs = s.folder(Path::new(r"C:\USERS\ME"));
+        assert_eq!((prefs.sort, prefs.view), (Some(sort), Some(ViewMode::List)));
+        assert_eq!(s.folders.len(), 1);
+
+        // Forgetting both drops the folder.
+        s.edit_folder(Path::new(r"C:\Users\Me"), |p| *p = Default::default());
+        assert!(s.folders.is_empty());
+
+        s.edit_folder(Path::new(r"C:\Users\Me"), |p| p.sort = Some(sort));
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
     }
 }

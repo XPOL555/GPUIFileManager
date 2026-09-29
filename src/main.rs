@@ -30,8 +30,7 @@ fn main() {
         icons::init(cx);
         app::bind_keys(cx);
 
-        let view = settings::Settings::get(cx).view_mode;
-        app::open_window(vec![app::Tab::new(start, view)], None, cx);
+        app::open_window(vec![app::Tab::new(start, cx)], None, cx);
 
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
