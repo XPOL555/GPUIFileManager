@@ -58,7 +58,7 @@ mod win {
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetKeyState, VK_SHIFT};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetActiveWindow, GetKeyState, VK_SHIFT};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
         BHID_SFObject, BHID_SFUIObject, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL,
@@ -201,6 +201,20 @@ mod win {
         }
     }
 
+    /// Moves a window without clamping or activating it (the tab drag preview).
+    pub fn set_window_origin(hwnd: isize, (x, y): ScreenPoint) {
+        unsafe {
+            let _ = SetWindowPos(HWND(hwnd as _), None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    /// A disabled window takes no input and `WindowFromPoint` looks through it.
+    pub fn disable_window(hwnd: isize) {
+        unsafe {
+            let _ = EnableWindow(HWND(hwnd as _), false);
+        }
+    }
+
     thread_local! {
         /// The menu currently shown, so the subclass proc can forward owner-draw
         /// and submenu messages ("Send to", "Open with" are populated lazily).
@@ -326,6 +340,8 @@ mod fallback {
         0
     }
     pub fn move_window(_hwnd: isize, _origin: ScreenPoint, _anchor: ScreenPoint) {}
+    pub fn set_window_origin(_hwnd: isize, _origin: ScreenPoint) {}
+    pub fn disable_window(_hwnd: isize) {}
     pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf], _at: ScreenPoint) -> Result<(), ()> {
         Ok(())
     }

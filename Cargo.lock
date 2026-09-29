@@ -1745,7 +1745,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "embed-resource",
+ "futures",
  "gpui-kit",
+ "image",
  "raw-window-handle",
  "serde",
  "serde_json",

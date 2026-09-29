@@ -4,19 +4,57 @@
 //! fields are ignored, so old and new files keep loading as settings are added.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 
+use crate::app::ViewMode;
 use crate::i18n::Language;
+use crate::theme::{Accent, ThemeChoice};
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub language: Language,
+    pub theme: ThemeChoice,
+    /// Accent of the dimmed theme.
+    pub accent: Accent,
+    /// Sidebar favorites, in order. `None` until the user changes them: the defaults
+    /// (the known folders) are then resolved at startup.
+    pub favorites: Option<Vec<PathBuf>>,
+    pub favorites_open: bool,
+    pub drives_open: bool,
+    pub sidebar_width: f32,
+    pub sidebar_collapsed: bool,
+    /// View mode of new tabs: the last one picked.
+    pub view_mode: ViewMode,
+    pub preview_pane: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            language: Language::default(),
+            theme: ThemeChoice::default(),
+            accent: Accent::default(),
+            favorites: None,
+            favorites_open: true,
+            drives_open: true,
+            sidebar_width: 230.,
+            sidebar_collapsed: false,
+            view_mode: ViewMode::default(),
+            preview_pane: false,
+        }
+    }
 }
 
 impl Global for Settings {}
+
+/// Saves run on background threads: only the newest one writes, one at a time.
+static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 impl Settings {
     fn path() -> Option<PathBuf> {
@@ -31,6 +69,10 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    pub fn get(cx: &App) -> &Self {
+        cx.global::<Self>()
+    }
+
     /// Applies `f`, saves the result on a background thread and redraws every window.
     /// Observe with `cx.observe_global_in::<Settings>` to update state that caches settings.
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {
@@ -40,8 +82,12 @@ impl Settings {
             return;
         }
         cx.set_global(settings.clone());
+        let generation = SAVE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         cx.background_spawn(async move {
-            if let Err(err) = settings.save() {
+            let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if SAVE_GENERATION.load(Ordering::SeqCst) == generation
+                && let Err(err) = settings.save()
+            {
                 eprintln!("settings: {err}");
             }
         })
@@ -64,13 +110,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that glob includes gpui_kit's `test` macro, which shadows `#[test]`.
-    use super::{Language, Settings};
+    use super::{Language, Settings, ThemeChoice};
 
     #[test]
     fn missing_and_unknown_fields_fall_back() {
         let s: Settings = serde_json::from_str(r#"{"future_option": true}"#).unwrap();
         assert_eq!(s, Settings::default());
-        let s: Settings = serde_json::from_str(r#"{"language": "it"}"#).unwrap();
+        let s: Settings = serde_json::from_str(r#"{"language": "it", "theme": "light"}"#).unwrap();
         assert_eq!(s.language, Language::Italian);
+        assert_eq!(s.theme, ThemeChoice::Light);
+        assert!(s.favorites_open);
     }
 }

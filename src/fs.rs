@@ -17,6 +17,46 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     /// Lowercased extension without the dot, empty for folders.
     pub ext: SharedString,
+    /// Win32 `FILE_ATTRIBUTE_*` bits (0 on other platforms).
+    pub attrs: u32,
+}
+
+impl Entry {
+    /// A folder known only by its path (sidebar favorites, drives, tabs), without
+    /// touching the disk. It is marked read-only so its icon is looked up per folder:
+    /// special folders like Desktop or Downloads have their own.
+    pub fn folder(path: &Path) -> Self {
+        const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        Self {
+            name: name.into(),
+            path: path.to_path_buf(),
+            is_dir: true,
+            hidden: false,
+            size: 0,
+            modified: None,
+            ext: SharedString::default(),
+            attrs: FILE_ATTRIBUTE_READONLY,
+        }
+    }
+}
+
+fn extension(path: &Path) -> SharedString {
+    path.extension().map(|e| e.to_string_lossy().to_lowercase().into()).unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn attributes(meta: &std::fs::Metadata) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes()
+}
+
+#[cfg(not(windows))]
+fn attributes(_meta: &std::fs::Metadata) -> u32 {
+    0
 }
 
 pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
@@ -28,13 +68,7 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
         let path = item.path();
         let name = item.file_name().to_string_lossy().into_owned();
         let is_dir = meta.is_dir();
-        let ext = if is_dir {
-            SharedString::default()
-        } else {
-            path.extension()
-                .map(|e| e.to_string_lossy().to_lowercase().into())
-                .unwrap_or_default()
-        };
+        let ext = if is_dir { SharedString::default() } else { extension(&path) };
         out.push(Entry {
             hidden: is_hidden(&name, &meta),
             name: name.into(),
@@ -43,6 +77,7 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
             size: if is_dir { 0 } else { meta.len() },
             modified: meta.modified().ok(),
             ext,
+            attrs: attributes(&meta),
         });
     }
     Ok(out)

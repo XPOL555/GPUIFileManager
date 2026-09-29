@@ -3,13 +3,15 @@
 
 mod app;
 mod assets;
+mod drag_preview;
 mod fs;
 mod i18n;
+mod icons;
 mod settings;
 mod shell;
+mod shell_images;
 mod table;
-
-use gpui_kit::component::{Theme, ThemeMode};
+mod theme;
 
 fn main() {
     shell::init_com();
@@ -23,10 +25,12 @@ fn main() {
         gpui_kit::init(cx);
         cx.set_global(settings::Settings::load());
         i18n::init(cx);
+        theme::apply(cx);
+        icons::init(cx);
         app::bind_keys(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
 
-        app::open_window(vec![app::Tab::new(start)], None, cx);
+        let view = settings::Settings::get(cx).view_mode;
+        app::open_window(vec![app::Tab::new(start, view)], None, cx);
 
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

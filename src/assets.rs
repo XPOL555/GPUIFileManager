@@ -6,7 +6,32 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [SquarePlus, AppWindow]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        SquarePlus,
+        AppWindow,
+        Sheet,
+        ListTree,
+        List,
+        Image,
+        PanelLeft,
+        PanelRight,
+        Star,
+        StarOff,
+        ArrowLeftRight,
+        SquareArrowOutUpRight,
+        Move,
+        FolderOpen,
+        ExternalLink,
+        Copy,
+        Info,
+        Eye,
+        Ellipsis,
+        RefreshCw,
+        Menu,
+    ]
+);
 
 pub struct AppAssets;
 

@@ -4,8 +4,10 @@
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 
+use crate::app::ViewMode;
 use crate::settings::Settings;
 use crate::shell::KnownFolder;
+use crate::theme::{Accent, ThemeChoice};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
@@ -63,7 +65,7 @@ pub fn t(cx: &App) -> &'static Strings {
 }
 
 pub struct Strings {
-    pub places: &'static str,
+    pub favorites: &'static str,
     pub drives: &'static str,
     pub filter: &'static str,
     pub col_name: &'static str,
@@ -74,9 +76,6 @@ pub struct Strings {
     pub file: &'static str,
     /// Type column for a file with an extension, e.g. "PDF file".
     pub file_of_type: fn(&str) -> String,
-    /// Status bar: folder and file counts.
-    pub counts: fn(usize, usize) -> String,
-    pub selected: &'static str,
     pub settings: &'static str,
     pub language: &'static str,
     pub open: &'static str,
@@ -87,6 +86,25 @@ pub struct Strings {
     pub refresh: &'static str,
     pub show_hidden: &'static str,
     pub more_options: &'static str,
+    pub add_favorite: &'static str,
+    pub add_folder_favorite: &'static str,
+    pub remove_favorite: &'static str,
+    pub toggle_sidebar: &'static str,
+    pub folders: &'static str,
+    pub files: &'static str,
+    pub preview_pane: &'static str,
+    pub no_selection: &'static str,
+    pub view_hint: &'static str,
+    pub drag_reorder: &'static str,
+    pub drag_detach: &'static str,
+    pub drag_move_to: &'static str,
+    pub drag_move_window: &'static str,
+    pub drag_cancel: &'static str,
+    pub theme: &'static str,
+    pub accent: &'static str,
+    view_modes: [&'static str; 6],
+    themes: [&'static str; 3],
+    accents: [&'static str; 5],
     known_folders: [&'static str; KnownFolder::COUNT],
 }
 
@@ -94,14 +112,22 @@ impl Strings {
     pub fn known_folder(&self, folder: KnownFolder) -> &'static str {
         self.known_folders[folder as usize]
     }
-}
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
+    pub fn view_mode(&self, mode: ViewMode) -> &'static str {
+        self.view_modes[mode as usize]
+    }
+
+    pub fn theme_name(&self, theme: ThemeChoice) -> &'static str {
+        self.themes[theme as usize]
+    }
+
+    pub fn accent_name(&self, accent: Accent) -> &'static str {
+        self.accents[accent as usize]
+    }
 }
 
 static EN: Strings = Strings {
-    places: "PLACES",
+    favorites: "FAVORITES",
     drives: "DRIVES",
     filter: "Filter…",
     col_name: "Name",
@@ -111,8 +137,6 @@ static EN: Strings = Strings {
     folder: "Folder",
     file: "File",
     file_of_type: |ext| format!("{ext} file"),
-    counts: |dirs, files| format!("{}, {}", plural(dirs, "folder", "folders"), plural(files, "file", "files")),
-    selected: "selected",
     settings: "Settings",
     language: "Language",
     open: "Open",
@@ -123,11 +147,30 @@ static EN: Strings = Strings {
     refresh: "Refresh",
     show_hidden: "Show hidden files",
     more_options: "Show more options",
+    add_favorite: "Add to favorites",
+    add_folder_favorite: "Add this folder to favorites",
+    remove_favorite: "Remove from favorites",
+    toggle_sidebar: "Show or hide the sidebar (Ctrl+B)",
+    folders: "Folders",
+    files: "Files",
+    preview_pane: "Preview pane (Alt+P)",
+    no_selection: "Select a file to preview it",
+    view_hint: "Ctrl + mouse wheel",
+    drag_reorder: "Release to move the tab here",
+    drag_detach: "Release to open it in a new window",
+    drag_move_to: "Release to move it to this window",
+    drag_move_window: "Release to move the window here",
+    drag_cancel: "Drag out of the window to detach the tab",
+    theme: "Theme",
+    accent: "Accent color",
+    view_modes: ["Details", "Tree", "List", "M icons", "L icons", "XL icons"],
+    themes: ["Dark", "Dimmed", "Light"],
+    accents: ["Blue", "Violet", "Teal", "Amber", "Rose"],
     known_folders: ["Home", "Desktop", "Downloads", "Documents", "Pictures", "Music", "Videos"],
 };
 
 static IT: Strings = Strings {
-    places: "RISORSE",
+    favorites: "PREFERITI",
     drives: "UNITÀ",
     filter: "Filtra…",
     col_name: "Nome",
@@ -137,8 +180,6 @@ static IT: Strings = Strings {
     folder: "Cartella",
     file: "File",
     file_of_type: |ext| format!("File {ext}"),
-    counts: |dirs, files| format!("{}, {} file", plural(dirs, "cartella", "cartelle"), files),
-    selected: "selezionato",
     settings: "Impostazioni",
     language: "Lingua",
     open: "Apri",
@@ -149,5 +190,24 @@ static IT: Strings = Strings {
     refresh: "Aggiorna",
     show_hidden: "Mostra file nascosti",
     more_options: "Mostra altre opzioni",
+    add_favorite: "Aggiungi ai preferiti",
+    add_folder_favorite: "Aggiungi questa cartella ai preferiti",
+    remove_favorite: "Rimuovi dai preferiti",
+    toggle_sidebar: "Mostra o nascondi la barra laterale (Ctrl+B)",
+    folders: "Cartelle",
+    files: "File",
+    preview_pane: "Riquadro anteprima (Alt+P)",
+    no_selection: "Seleziona un file per vederne l'anteprima",
+    view_hint: "Ctrl + rotellina",
+    drag_reorder: "Rilascia per spostare qui la scheda",
+    drag_detach: "Rilascia per aprirla in una nuova finestra",
+    drag_move_to: "Rilascia per spostarla in questa finestra",
+    drag_move_window: "Rilascia per spostare qui la finestra",
+    drag_cancel: "Trascina fuori dalla finestra per staccare la scheda",
+    theme: "Tema",
+    accent: "Colore di accento",
+    view_modes: ["Dettagli", "Albero", "Elenco", "Icone M", "Icone L", "Icone XL"],
+    themes: ["Scuro", "Attenuato", "Chiaro"],
+    accents: ["Blu", "Viola", "Verde acqua", "Ambra", "Rosa"],
     known_folders: ["Home", "Desktop", "Download", "Documenti", "Immagini", "Musica", "Video"],
 };
