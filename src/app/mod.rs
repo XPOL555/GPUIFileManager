@@ -1,8 +1,9 @@
 //! Main window. This module holds the window, navigation and actions; the areas of
 //! the window live in submodules: `sidebar` (favorites, drives), `tabs` (tab strip,
 //! dragging tabs between windows), `address_bar`, `views` (view modes, icon grid,
-//! preview pane, info bar) and `menu` (context menus).
+//! preview pane, info bar), `menu` (context menus) and `about` (About dialog, update check).
 
+mod about;
 mod address_bar;
 mod menu;
 mod sidebar;
@@ -17,6 +18,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
@@ -651,17 +653,29 @@ impl FileManager {
         let s = i18n::t(cx);
         // On Windows the bar is an HTCAPTION area: an unhandled mouse-down enters the
         // native move loop, which swallows the mouse-up and the click.
-        let button = |button: Button| div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(button);
+        let button =
+            |button: AnyElement| div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(button);
+        let this = cx.entity().downgrade();
         TitleBar::new().pl_1().child(
             h_flex()
                 .gap_0p5()
                 .child(button(
-                    Button::new("settings")
+                    Button::new("app-menu")
                         .ghost()
                         .small()
                         .icon(Icon::new(LucideIcon::Menu))
-                        .tooltip(s.settings)
-                        .on_click(cx.listener(|this, _, window, cx| this.open_settings(&OpenSettings, window, cx))),
+                        .tooltip(s.menu)
+                        .dropdown_menu(move |menu, _, cx| {
+                            let s = i18n::t(cx);
+                            menu.min_w(px(180.))
+                                .item(menu::menu_item(&this, s.settings, LucideIcon::Settings, |fm, window, cx| {
+                                    fm.open_settings(&OpenSettings, window, cx)
+                                }))
+                                .item(menu::menu_item(&this, s.about, LucideIcon::Info, |fm, window, cx| {
+                                    fm.open_about(window, cx)
+                                }))
+                        })
+                        .into_any_element(),
                 ))
                 .child(button(
                     Button::new("toggle-sidebar")
@@ -670,7 +684,8 @@ impl FileManager {
                         .icon(Icon::new(LucideIcon::PanelLeft))
                         .tooltip(s.toggle_sidebar)
                         .selected(!self.sidebar_collapsed)
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx)))
+                        .into_any_element(),
                 ))
                 .child(img(self.logo.clone()).size_4().ml_1p5())
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("FileManager")),

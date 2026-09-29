@@ -12,6 +12,7 @@ mod shell;
 mod shell_images;
 mod table;
 mod theme;
+mod update;
 
 fn main() {
     shell::init_com();

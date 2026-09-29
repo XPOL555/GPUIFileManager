@@ -52,6 +52,11 @@ mod win {
 
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+    use windows::Win32::Networking::WinHttp::{
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+        WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
+        WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
+    };
     use windows::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
     };
@@ -319,6 +324,86 @@ mod win {
             result
         }
     }
+
+    /// A WinHTTP handle, closed on drop.
+    struct Internet(*mut core::ffi::c_void);
+
+    impl Internet {
+        fn new(handle: *mut core::ffi::c_void, step: &str) -> Result<Self, String> {
+            if handle.is_null() {
+                Err(format!("{step}: {}", windows::core::Error::from_thread()))
+            } else {
+                Ok(Self(handle))
+            }
+        }
+    }
+
+    impl Drop for Internet {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = WinHttpCloseHandle(self.0);
+            }
+        }
+    }
+
+    /// HTTPS GET through WinHTTP (system proxy settings, Windows TLS, redirects
+    /// followed). Blocking: call it from a background task. Returns the status code and
+    /// at most `max_len` bytes of the body.
+    pub fn https_get(host: &str, path: &str, headers: &str, max_len: usize) -> Result<(u16, Vec<u8>), String> {
+        let failed = |step: &str, e: windows::core::Error| format!("{step}: {e}");
+        let agent = wide(concat!("FileManager/", env!("CARGO_PKG_VERSION")).as_ref());
+        let (host, path) = (wide(host.as_ref()), wide(path.as_ref()));
+        let headers: Vec<u16> = headers.encode_utf16().collect();
+        unsafe {
+            let session = Internet::new(
+                WinHttpOpen(PCWSTR(agent.as_ptr()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0),
+                "WinHttpOpen",
+            )?;
+            let _ = WinHttpSetTimeouts(session.0, 10_000, 10_000, 10_000, 15_000);
+            let connection = Internet::new(WinHttpConnect(session.0, PCWSTR(host.as_ptr()), 443, 0), "WinHttpConnect")?;
+            let request = Internet::new(
+                WinHttpOpenRequest(
+                    connection.0,
+                    w!("GET"),
+                    PCWSTR(path.as_ptr()),
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    std::ptr::null(),
+                    WINHTTP_FLAG_SECURE,
+                ),
+                "WinHttpOpenRequest",
+            )?;
+            let headers = (!headers.is_empty()).then_some(headers.as_slice());
+            WinHttpSendRequest(request.0, headers, None, 0, 0, 0).map_err(|e| failed("WinHttpSendRequest", e))?;
+            WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| failed("WinHttpReceiveResponse", e))?;
+
+            let mut status = 0u32;
+            let mut len = size_of::<u32>() as u32;
+            WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some(&mut status as *mut u32 as *mut _),
+                &mut len,
+                std::ptr::null_mut(),
+            )
+            .map_err(|e| failed("WinHttpQueryHeaders", e))?;
+
+            let mut body = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while body.len() < max_len {
+                let mut read = 0u32;
+                WinHttpReadData(request.0, chunk.as_mut_ptr() as *mut _, chunk.len() as u32, &mut read)
+                    .map_err(|e| failed("WinHttpReadData", e))?;
+                if read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&chunk[..read as usize]);
+            }
+            body.truncate(max_len);
+            Ok((status as u16, body))
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -344,6 +429,9 @@ mod fallback {
     pub fn disable_window(_hwnd: isize) {}
     pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf], _at: ScreenPoint) -> Result<(), ()> {
         Ok(())
+    }
+    pub fn https_get(_host: &str, _path: &str, _headers: &str, _max_len: usize) -> Result<(u16, Vec<u8>), String> {
+        Err("HTTPS is only implemented on Windows".into())
     }
 }
 #[cfg(not(windows))]

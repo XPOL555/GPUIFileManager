@@ -159,7 +159,7 @@ impl FileManager {
 }
 
 /// A context-menu entry whose handler runs on the `FileManager` behind `this`.
-fn menu_item(
+pub(super) fn menu_item(
     this: &WeakEntity<FileManager>,
     label: &'static str,
     icon: impl Into<Icon>,
