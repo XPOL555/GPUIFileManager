@@ -481,7 +481,7 @@ mod tests {
     fn shell_data_objects_carry_file_lists() {
         use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, IDataObject};
         use windows::Win32::UI::Shell::BHID_DataObject;
-        let root = std::env::temp_dir().join(format!("fm-data-{}", std::process::id()));
+        let root = crate::fs::test_temp_dir().join(format!("fm-data-{}", std::process::id()));
         let paths = vec![root.join("a").join("x.txt"), root.join("b").join("y.txt")];
         for p in &paths {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -501,7 +501,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn shell_copies_moves_and_renames() {
-        let root = std::env::temp_dir().join(format!("fm-ops-{}", std::process::id()));
+        let root = crate::fs::test_temp_dir().join(format!("fm-ops-{}", std::process::id()));
         let (a, b) = (root.join("a"), root.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn unique_names_skip_taken_ones() {
-        let dir = std::env::temp_dir().join(format!("fm-unique-{}", std::process::id()));
+        let dir = crate::fs::test_temp_dir().join(format!("fm-unique-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("New folder")).unwrap();
         std::fs::create_dir_all(dir.join("New folder (2)")).unwrap();
         assert_eq!(unique_name(&dir, "New folder"), "New folder (3)");

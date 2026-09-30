@@ -378,3 +378,15 @@ mod tests {
         assert_eq!(format_size(1536), "1.5 KB");
     }
 }
+
+/// `%TEMP%` as the shell spells it: on CI it is in its 8.3 form (`RUNNER~1`), and the
+/// shell hands paths back in the long one.
+#[cfg(test)]
+pub(crate) fn test_temp_dir() -> std::path::PathBuf {
+    let temp = std::env::temp_dir();
+    let long = std::fs::canonicalize(&temp).unwrap_or_else(|_| temp.clone());
+    match long.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) => std::path::PathBuf::from(plain),
+        None => long,
+    }
+}

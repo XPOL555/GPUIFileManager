@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn deleted_files_are_listed_and_restored() {
         use crate::file_ops::{FileOp, perform};
-        let root = std::env::temp_dir().join(format!("fm-bin-{}", std::process::id()));
+        let root = crate::fs::test_temp_dir().join(format!("fm-bin-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join(format!("fm recycle test {}.txt", std::process::id()));
         std::fs::write(&file, "bin").unwrap();
