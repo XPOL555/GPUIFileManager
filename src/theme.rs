@@ -58,6 +58,7 @@ pub fn apply(cx: &mut App) {
         ThemeChoice::Dimmed => Rc::new(dimmed(settings.accent)),
     };
     Theme::update(cx, |theme| theme.apply_config(&config));
+    crate::shell::set_menu_theme(config.mode.is_dark());
 }
 
 /// Blue-grey dark theme, in gpui-component's theme file format. Colors that are not

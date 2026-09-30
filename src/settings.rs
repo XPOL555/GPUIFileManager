@@ -35,6 +35,14 @@ pub struct Settings {
     /// Sorting of new tabs: the last one picked.
     pub sort: Sort,
     pub preview_pane: bool,
+    /// Hidden and system files are listed (dimmed).
+    pub show_hidden: bool,
+    /// File names end with their extension (shortcuts never show theirs, as in Explorer).
+    pub show_extensions: bool,
+    /// What the cover flow view shows.
+    pub media_filter: crate::fs::MediaFilter,
+    /// Height of the covers over the list, in pixels.
+    pub flow_height: f32,
     /// View and sorting kept for single folders, by `folder_key`. It only grows
     /// through an explicit "Keep for this folder".
     pub folders: BTreeMap<String, FolderPrefs>,
@@ -73,6 +81,10 @@ impl Default for Settings {
             view_mode: ViewMode::default(),
             sort: Sort::default(),
             preview_pane: false,
+            show_hidden: true,
+            show_extensions: true,
+            media_filter: crate::fs::MediaFilter::default(),
+            flow_height: 330.,
             folders: BTreeMap::new(),
             sort_tip_shown: false,
             view_tip_shown: false,
@@ -169,6 +181,7 @@ mod tests {
         assert_eq!(s.language, Language::Italian);
         assert_eq!(s.theme, ThemeChoice::Light);
         assert!(s.favorites_open);
+        assert!(s.show_hidden && s.show_extensions);
     }
 
     #[test]

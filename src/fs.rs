@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui_kit::SharedString;
@@ -20,6 +21,62 @@ pub struct Entry {
     pub ext: SharedString,
     /// Win32 `FILE_ATTRIBUTE_*` bits (0 on other platforms).
     pub attrs: u32,
+    /// In the Recycle Bin: the folder the item was deleted from. Its `modified` is
+    /// then the time it was deleted, and its `path` the file the bin keeps it in.
+    pub origin: Option<Arc<Path>>,
+}
+
+/// Where the Recycle Bin is, as the shell parses it. Tabs and favorites hold it like a
+/// folder; `recycle` lists it.
+pub const RECYCLE_BIN: &str = "::{645FF040-5081-101B-9F08-08002B30309D}";
+
+pub fn is_recycle_bin(path: &Path) -> bool {
+    path.as_os_str() == RECYCLE_BIN
+}
+
+/// The folder above `path`; none above a drive or the Recycle Bin.
+pub fn parent(path: &Path) -> Option<&Path> {
+    if is_recycle_bin(path) { None } else { path.parent().filter(|p| !p.as_os_str().is_empty()) }
+}
+
+/// Extensions Explorer never shows, whatever the setting: shortcuts.
+const HIDDEN_EXTENSIONS: &[&str] = &["lnk", "url", "pif", "appref-ms"];
+
+const PHOTOS: &[&str] = &[
+    "jpg", "jpeg", "jfif", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", "jxr", "dng", "cr2",
+    "cr3", "nef", "arw", "orf", "rw2", "raf", "srw", "pef",
+];
+const VIDEOS: &[&str] =
+    &["mp4", "m4v", "mov", "mkv", "avi", "wmv", "webm", "mpg", "mpeg", "ts", "m2ts", "mts", "3gp", "flv"];
+
+pub fn is_photo(e: &Entry) -> bool {
+    !e.is_dir && PHOTOS.contains(&e.ext.as_ref())
+}
+
+pub fn is_video(e: &Entry) -> bool {
+    !e.is_dir && VIDEOS.contains(&e.ext.as_ref())
+}
+
+/// What the cover flow view lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaFilter {
+    #[default]
+    All,
+    PhotosAndVideos,
+    Photos,
+}
+
+impl MediaFilter {
+    pub const ALL: [MediaFilter; 3] = [MediaFilter::All, MediaFilter::PhotosAndVideos, MediaFilter::Photos];
+
+    pub fn admits(self, e: &Entry) -> bool {
+        match self {
+            MediaFilter::All => true,
+            MediaFilter::PhotosAndVideos => is_photo(e) || is_video(e),
+            MediaFilter::Photos => is_photo(e),
+        }
+    }
 }
 
 impl Entry {
@@ -41,7 +98,31 @@ impl Entry {
             modified: None,
             ext: SharedString::default(),
             attrs: FILE_ATTRIBUTE_READONLY,
+            origin: None,
         }
+    }
+
+    /// A Windows shortcut (`.lnk`).
+    pub fn is_shortcut(&self) -> bool {
+        !self.is_dir && self.ext == "lnk"
+    }
+
+    /// The name as listed: without the extension when extensions are hidden, and
+    /// always for shortcuts, as Explorer does.
+    pub fn display_name(&self, show_extensions: bool) -> &str {
+        if self.is_dir || self.ext.is_empty() || (show_extensions && !HIDDEN_EXTENSIONS.contains(&self.ext.as_ref())) {
+            return &self.name;
+        }
+        match self.name.rfind('.') {
+            Some(dot) if dot > 0 => &self.name[..dot],
+            _ => &self.name,
+        }
+    }
+
+    /// `display_name` as a `SharedString`, without copying when it is the whole name.
+    pub fn shown_name(&self, show_extensions: bool) -> SharedString {
+        let shown = self.display_name(show_extensions);
+        if shown.len() == self.name.len() { self.name.clone() } else { shown.to_string().into() }
     }
 }
 
@@ -79,6 +160,7 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
             modified: meta.modified().ok(),
             ext,
             attrs: attributes(&meta),
+            origin: None,
         });
     }
     Ok(out)
@@ -128,6 +210,8 @@ pub fn compare(a: &Entry, b: &Entry, key: SortKey, descending: bool) -> Ordering
     b.is_dir.cmp(&a.is_dir).then_with(|| {
         let ord = match key {
             SortKey::Name => Ordering::Equal,
+            // In the Recycle Bin the type column shows where items were deleted from.
+            SortKey::Type if a.origin.is_some() => a.origin.cmp(&b.origin),
             SortKey::Type => a.ext.cmp(&b.ext),
             SortKey::Modified => a.modified.cmp(&b.modified),
             SortKey::Size => a.size.cmp(&b.size),
@@ -260,6 +344,32 @@ mod tests {
         assert_eq!(complete_dirs(&root, "AL", 10), ["Alpha", "alpha2", "alpha10", "alps"]);
         assert_eq!(complete_dirs(&root, "al", 2), ["Alpha", "alpha2"]);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn display_names_hide_extensions_like_explorer() {
+        let file = |name: &str| {
+            let mut e = Entry::folder(Path::new(name));
+            e.is_dir = false;
+            e.ext = extension(Path::new(name));
+            e
+        };
+        assert_eq!(file("photo.JPG").display_name(true), "photo.JPG");
+        assert_eq!(file("photo.JPG").display_name(false), "photo");
+        assert_eq!(file("archive.tar.gz").display_name(false), "archive.tar");
+        // Shortcuts never show theirs; names that are only an extension keep it.
+        assert_eq!(file("Editor.lnk").display_name(true), "Editor");
+        assert_eq!(file(".gitignore").display_name(false), ".gitignore");
+        assert_eq!(file("README").display_name(false), "README");
+        assert_eq!(Entry::folder(Path::new("dir.d")).display_name(false), "dir.d");
+    }
+
+    #[test]
+    fn parents_stop_at_drives_and_the_recycle_bin() {
+        assert_eq!(parent(Path::new(r"C:\a\b")), Some(Path::new(r"C:\a")));
+        assert_eq!(parent(Path::new(r"C:\")), None);
+        assert_eq!(parent(Path::new(RECYCLE_BIN)), None);
+        assert!(is_recycle_bin(&PathBuf::from(RECYCLE_BIN)));
     }
 
     #[test]

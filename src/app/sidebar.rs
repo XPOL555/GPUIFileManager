@@ -1,13 +1,15 @@
-//! Sidebar: favorites (saved, removable, reorderable by dragging) and drives, as
-//! accordion sections. It can be resized from its right edge and collapsed with an
-//! animation (Ctrl+B or the title bar button).
+//! Sidebar: favorites (saved, removable, reorderable by dragging; folders dragged onto
+//! their heading join them) and drives, as accordion sections, and the Recycle Bin
+//! below them. It can be resized from its right edge and collapsed with an animation
+//! (Ctrl+B or the title bar button).
 
 use gpui_kit::component::accordion::{Accordion, AccordionItem};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, ElementExt as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 
 use super::menu::MenuTarget;
 use super::*;
+use crate::dnd::{self, Target};
 use crate::fs::Entry;
 use crate::icons::{self, IconSize};
 
@@ -64,13 +66,10 @@ impl FileManager {
         Settings::get(cx).favorites.clone().unwrap_or_else(|| self.places.iter().map(|(_, p)| p.clone()).collect())
     }
 
-    fn favorite_label(&self, path: &Path, s: &i18n::Strings) -> String {
+    fn favorite_label(&self, path: &Path, s: &'static i18n::Strings, cx: &App) -> String {
         match self.places.iter().find(|(_, p)| p == path) {
             Some((known, _)) => s.known_folder(*known).to_string(),
-            None => path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+            None => folder_name(path, cx),
         }
     }
 
@@ -161,7 +160,7 @@ impl FileManager {
             .into_iter()
             .enumerate()
             .map(|(ix, path)| {
-                let label = self.favorite_label(&path, s);
+                let label = self.favorite_label(&path, s, cx);
                 self.render_favorite(ix, path, label, cx)
             })
             .collect();
@@ -169,6 +168,7 @@ impl FileManager {
         let heading = |label: &'static str, cx: &App| {
             div().text_xs().font_weight(FontWeight::MEDIUM).text_color(cx.theme().muted_foreground).child(label)
         };
+        let favorites_title = self.render_favorites_title(heading(s.favorites, cx), cx);
 
         // Sections as tall as their content (the accordion fills its parent by default),
         // on the sidebar's own background, aligned with the items.
@@ -182,7 +182,7 @@ impl FileManager {
             .bordered(false)
             .small()
             .h_auto()
-            .item(|item| section(item).title(heading(s.favorites, cx)).open(favorites_open).child(v_flex().children(favorites)))
+            .item(|item| section(item).title(favorites_title).open(favorites_open).child(v_flex().children(favorites)))
             .item(|item| section(item).title(heading(s.drives, cx)).open(drives_open).child(v_flex().children(drives)))
             .on_toggle_click(|open: &[usize], _, cx| {
                 Settings::update(cx, |s| {
@@ -203,12 +203,17 @@ impl FileManager {
             .when(self.sidebar_visible >= 1., |d| {
                 d.child(
                     v_flex()
-                        .id("sidebar-content")
                         .w(px(self.sidebar_width))
                         .h_full()
-                        .overflow_y_scroll()
-                        .p_1()
-                        .child(sections),
+                        .child(v_flex().id("sidebar-content").flex_1().min_h_0().overflow_y_scroll().p_1().child(sections))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .p_1()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .child(self.render_bin_item(cx)),
+                        ),
                 )
             })
             .when(!self.sidebar_collapsed, |d| {
@@ -234,8 +239,10 @@ impl FileManager {
             })
     }
 
+    /// A folder of the sidebar; files can be dropped on it.
     fn sidebar_item(&self, id: ElementId, path: &Path, label: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let active = self.tab().path == path;
+        let files_over = matches!(&self.drop_hover, Some(SpotKey::Sidebar(p)) if p == path);
         let (click, middle) = (path.to_path_buf(), path.to_path_buf());
         h_flex()
             .id(id)
@@ -245,7 +252,9 @@ impl FileManager {
             .rounded(cx.theme().radius)
             .when(active, |d| d.bg(cx.theme().accent))
             .hover(|d| d.bg(cx.theme().accent.opacity(0.6)))
+            .when(files_over, |d| d.bg(cx.theme().drop_target))
             .cursor_pointer()
+            .on_prepaint(dnd::zone(&self.drop_zones, SpotKey::Sidebar(path.to_path_buf()), path.to_path_buf(), 2))
             .child(icons::entry_icon(&Entry::folder(path), IconSize::Small, px(16.), cx))
             .child(div().truncate().child(label))
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
@@ -257,6 +266,51 @@ impl FileManager {
             )
     }
 
+    /// The favorites heading. While folders are dragged over the window it shows where
+    /// to drop them to make them favorites.
+    fn render_favorites_title(&self, heading: Div, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = i18n::t(cx);
+        let theme = cx.theme();
+        let over = self.drop_hover == Some(SpotKey::Favorites);
+        h_flex()
+            .w_full()
+            .min_h(px(22.))
+            .gap_2()
+            .justify_between()
+            .on_prepaint(dnd::zone(&self.drop_zones, SpotKey::Favorites, Target::Favorites, 3))
+            .child(heading)
+            .when(self.dragging_folders, |d| {
+                d.child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_1()
+                        .px_2()
+                        .py_0p5()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_dashed()
+                        .border_color(theme.drag_border)
+                        .text_xs()
+                        .text_color(if over { theme.foreground } else { theme.muted_foreground })
+                        .when(over, |d| d.bg(theme.drop_target))
+                        .child(Icon::new(LucideIcon::Plus).xsmall())
+                        .child(s.favorites_drop),
+                )
+            })
+    }
+
+    /// The Recycle Bin, below the sections: open it, drop files on it to delete them.
+    fn render_bin_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let path = PathBuf::from(fs::RECYCLE_BIN);
+        let label = i18n::t(cx).recycle_bin.to_string();
+        self.sidebar_item("recycle-bin".into(), &path, label, cx).on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                this.show_menu(MenuTarget::sidebar(&path, false), ev.position, false, window, cx)
+            }),
+        )
+    }
+
     fn render_favorite(&self, ix: usize, path: PathBuf, label: String, cx: &mut Context<Self>) -> Div {
         let drag = DraggedFavorite { ix, label: label.clone().into() };
         let item = self
@@ -264,7 +318,7 @@ impl FileManager {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                    this.show_menu(MenuTarget::sidebar(&path, true), ev, window, cx)
+                    this.show_menu(MenuTarget::sidebar(&path, true), ev.position, ev.modifiers.shift, window, cx)
                 }),
             )
             .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
@@ -284,7 +338,7 @@ impl FileManager {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                    this.show_menu(MenuTarget::sidebar(&root, false), ev, window, cx)
+                    this.show_menu(MenuTarget::sidebar(&root, false), ev.position, ev.modifiers.shift, window, cx)
                 }),
             );
         v_flex().child(item).when(has_size, |c| {

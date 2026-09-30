@@ -1,11 +1,15 @@
 //! Main window. This module holds the window, navigation and actions; the areas of
 //! the window live in submodules: `sidebar` (favorites, drives), `tabs` (tab strip,
-//! dragging tabs between windows), `address_bar`, `views` (view modes, icon grid,
-//! preview pane, info bar), `folder_prefs` (sorting, view and sorting kept per folder),
-//! `menu` (context menus) and `about` (About dialog, update check).
+//! dragging tabs between windows and instances), `address_bar`, `views` (view modes,
+//! icon grid, preview pane, info bar), `files` (selection, file operations, file drag
+//! and drop), `folder_prefs` (sorting, view and sorting kept per folder), `menu`
+//! (context menus) and `about` (About dialog, update check).
 
 mod about;
 mod address_bar;
+mod bin;
+mod cover_flow;
+mod files;
 mod folder_prefs;
 mod menu;
 mod sidebar;
@@ -14,26 +18,33 @@ mod views;
 
 pub use views::ViewMode;
 
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use futures::StreamExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, ElementExt as _, Icon, Selectable as _, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use serde::{Deserialize, Serialize};
 
+use crate::dnd::{SharedZones, SpotKey};
 use crate::drag_preview::DragPreviewWindow;
+use crate::hooks::{self, HookEvent};
 use crate::i18n::{self, Language};
 use crate::settings::Settings;
-use crate::table::{FileTable, HeaderClick};
+use crate::table::{FileTable, HeaderClick, RowEvent};
 use crate::theme::{self, Accent, ThemeChoice};
 use crate::{fs, shell};
 
@@ -57,22 +68,37 @@ actions!(
         OpenSettings,
         ToggleSidebar,
         TogglePreview,
-        GridLeft,
-        GridRight,
-        GridUp,
-        GridDown,
-        GridHome,
-        GridEnd
+        NewFolder,
+        CursorUp,
+        CursorDown,
+        CursorLeft,
+        CursorRight,
+        CursorHome,
+        CursorEnd,
+        CursorPageUp,
+        CursorPageDown,
+        SelectAll,
+        ToggleCursorItem,
+        RenameSelected,
+        DeleteSelected,
+        DeletePermanently,
+        CopySelected,
+        CutSelected,
+        PasteFiles,
+        ShowProperties
     ]
 );
 
 const CONTEXT: &str = "FileManager";
-const GRID_CONTEXT: &str = "FileGrid";
+/// The file view (table or grid), when it has the keyboard.
+const FILES_CONTEXT: &str = "FileView";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("enter", OpenSelected, Some(CONTEXT)),
-        KeyBinding::new("backspace", GoUp, Some(CONTEXT)),
+        // Only in the file view: inputs (filter, path) let Enter and Backspace at their
+        // start bubble up, which must not open the selection or leave the folder.
+        KeyBinding::new("enter", OpenSelected, Some(FILES_CONTEXT)),
+        KeyBinding::new("backspace", GoUp, Some(FILES_CONTEXT)),
         KeyBinding::new("alt-up", GoUp, Some(CONTEXT)),
         KeyBinding::new("alt-left", GoBack, Some(CONTEXT)),
         KeyBinding::new("alt-right", GoForward, Some(CONTEXT)),
@@ -87,25 +113,61 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("ctrl-b", ToggleSidebar, Some(CONTEXT)),
         KeyBinding::new("alt-p", TogglePreview, Some(CONTEXT)),
-        KeyBinding::new("left", GridLeft, Some(GRID_CONTEXT)),
-        KeyBinding::new("right", GridRight, Some(GRID_CONTEXT)),
-        KeyBinding::new("up", GridUp, Some(GRID_CONTEXT)),
-        KeyBinding::new("down", GridDown, Some(GRID_CONTEXT)),
-        KeyBinding::new("home", GridHome, Some(GRID_CONTEXT)),
-        KeyBinding::new("end", GridEnd, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-shift-n", NewFolder, Some(CONTEXT)),
+        KeyBinding::new("ctrl-a", SelectAll, Some(FILES_CONTEXT)),
+        KeyBinding::new("ctrl-space", ToggleCursorItem, Some(FILES_CONTEXT)),
+        KeyBinding::new("f2", RenameSelected, Some(FILES_CONTEXT)),
+        KeyBinding::new("delete", DeleteSelected, Some(FILES_CONTEXT)),
+        KeyBinding::new("shift-delete", DeletePermanently, Some(FILES_CONTEXT)),
+        KeyBinding::new("ctrl-c", CopySelected, Some(FILES_CONTEXT)),
+        KeyBinding::new("ctrl-x", CutSelected, Some(FILES_CONTEXT)),
+        KeyBinding::new("ctrl-v", PasteFiles, Some(FILES_CONTEXT)),
+        KeyBinding::new("alt-enter", ShowProperties, Some(FILES_CONTEXT)),
     ]);
+    // Moves: with Shift they extend the selection, with Ctrl they only move the cursor.
+    let mut moves = Vec::new();
+    moves.extend(move_keys("up", CursorUp));
+    moves.extend(move_keys("down", CursorDown));
+    moves.extend(move_keys("left", CursorLeft));
+    moves.extend(move_keys("right", CursorRight));
+    moves.extend(move_keys("home", CursorHome));
+    moves.extend(move_keys("end", CursorEnd));
+    moves.extend(move_keys("pageup", CursorPageUp));
+    moves.extend(move_keys("pagedown", CursorPageDown));
+    cx.bind_keys(moves);
 }
 
-#[derive(Clone)]
+fn move_keys<A: Action + Clone>(key: &str, action: A) -> [KeyBinding; 4] {
+    ["", "shift-", "ctrl-", "ctrl-shift-"]
+        .map(|modifiers| KeyBinding::new(&format!("{modifiers}{key}"), action.clone(), Some(FILES_CONTEXT)))
+}
+
+static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_tab_id() -> u64 {
+    NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A tab; it moves between windows and instances as it is (history, view, sorting).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tab {
+    /// Tells tabs apart while they are dragged around; not kept across instances.
+    #[serde(skip, default = "next_tab_id")]
+    id: u64,
     path: PathBuf,
+    #[serde(default)]
     back: Vec<PathBuf>,
+    #[serde(default)]
     forward: Vec<PathBuf>,
     /// View and sorting shown: the ones kept for the folder, else the picked ones.
+    #[serde(default)]
     view: ViewMode,
+    #[serde(default)]
     sort: fs::Sort,
     /// The last view and sorting picked by hand in this tab.
+    #[serde(default)]
     picked_view: ViewMode,
+    #[serde(default)]
     picked_sort: fs::Sort,
 }
 
@@ -114,8 +176,16 @@ impl Tab {
     pub fn new(path: PathBuf, cx: &App) -> Self {
         let settings = Settings::get(cx);
         let (view, sort) = (settings.view_mode, settings.sort);
-        let mut tab =
-            Self { path, back: Vec::new(), forward: Vec::new(), view, sort, picked_view: view, picked_sort: sort };
+        let mut tab = Self {
+            id: next_tab_id(),
+            path,
+            back: Vec::new(),
+            forward: Vec::new(),
+            view,
+            sort,
+            picked_view: view,
+            picked_sort: sort,
+        };
         tab.use_folder_prefs(cx);
         tab
     }
@@ -127,16 +197,29 @@ impl Tab {
         self.sort = prefs.sort.unwrap_or(self.picked_sort);
     }
 
-    fn title(&self) -> SharedString {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.path.to_string_lossy().into_owned())
-            .into()
+    fn title(&self, cx: &App) -> SharedString {
+        folder_name(&self.path, cx).into()
     }
 }
 
-/// Every open window, so a tab released outside its own window can find the window under the cursor.
+/// A folder's name as the app shows it: the last part of its path, the drive, or the
+/// Recycle Bin.
+fn folder_name(path: &Path, cx: &App) -> String {
+    if fs::is_recycle_bin(path) {
+        return i18n::t(cx).recycle_bin.to_string();
+    }
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Lists a folder, or the Recycle Bin. Blocks: run it on a background thread.
+fn list_folder(path: &Path) -> std::io::Result<Vec<fs::Entry>> {
+    if fs::is_recycle_bin(path) { Ok(crate::recycle::list()) } else { fs::list(path) }
+}
+
+/// Every open window, so a tab released outside its own window can find the window
+/// under the cursor, and hook events their view.
 #[derive(Default)]
 struct OpenWindows(Vec<OpenWindow>);
 
@@ -147,6 +230,33 @@ struct OpenWindow {
 }
 
 impl Global for OpenWindows {}
+
+/// Starts delivering what the windows' Win32 hooks receive (tabs from other instances,
+/// folder changes, file drops) to their views. Call once, before opening windows.
+pub fn init(cx: &mut App) {
+    let mut events = hooks::init();
+    cx.spawn(async move |cx| {
+        while let Some((hwnd, event)) = events.next().await {
+            cx.update(|cx| deliver(hwnd, event, cx));
+        }
+    })
+    .detach();
+}
+
+fn deliver(hwnd: isize, event: HookEvent, cx: &mut App) {
+    let Some((view, handle)) = cx
+        .try_global::<OpenWindows>()
+        .and_then(|windows| windows.0.iter().find(|w| w.hwnd == hwnd))
+        .map(|w| (w.view.clone(), w.handle))
+    else {
+        return;
+    };
+    handle
+        .update(cx, |_, window, cx| {
+            view.update(cx, |fm, cx| fm.on_hook(event, window, cx)).ok();
+        })
+        .ok();
+}
 
 /// Places a window so the cursor sits over its first tab, as if it was being held by it.
 fn place_under_cursor(hwnd: isize, cursor: shell::ScreenPoint, scale: f32) {
@@ -171,8 +281,13 @@ pub fn open_window(tabs: Vec<Tab>, cursor: Option<shell::ScreenPoint>, cx: &mut 
     let hwnd = handle
         .update(cx, |_, window, cx| {
             let hwnd = shell::hwnd(window);
-            if let (Some(hwnd), Some(cursor)) = (hwnd, cursor) {
-                place_under_cursor(hwnd, cursor, window.scale_factor());
+            if let Some(hwnd) = hwnd {
+                if let Some(cursor) = cursor {
+                    place_under_cursor(hwnd, cursor, window.scale_factor());
+                }
+                hooks::install(hwnd);
+                crate::dnd::register_drop_target(hwnd, view.read(cx).drop_zones.clone());
+                view.update(cx, |fm, _| fm.bin_watch = hooks::watch_bin(hwnd));
             }
             view.update(cx, |fm, cx| fm.focus_view(window, cx));
             hwnd
@@ -192,6 +307,7 @@ fn drive_label(d: &shell::Drive) -> String {
 
 pub struct FileManager {
     focus: FocusHandle,
+    hwnd: isize,
     logo: Arc<Image>,
     tabs: Vec<Tab>,
     active: usize,
@@ -220,21 +336,49 @@ pub struct FileManager {
     resizing_sidebar: bool,
     sidebar_click: Option<sidebar::SidebarClick>,
 
-    // Views (see `views`).
-    grid_focus: FocusHandle,
+    // Views (see `views`, `cover_flow`).
     grid_scroll: UniformListScrollHandle,
-    grid_selected: Option<usize>,
+    flow: cover_flow::CoverFlow,
+    /// Where the table is on screen, from the last frame (under the covers in Cover Flow).
+    table_bounds: Rc<Cell<Bounds<Pixels>>>,
     grid_columns: usize,
     zoom_pixels: f32,
     view_slider: Entity<SliderState>,
     preview_pane: bool,
 
+    // Files (see `files`).
+    /// The file view (table or grid) and its keyboard context.
+    files_focus: FocusHandle,
+    /// Where the file view is on screen, from the last frame.
+    files_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Where an item was pressed, until the mouse moves far enough to drag it.
+    press: Rc<Cell<Option<Point<Pixels>>>>,
+    rename: Option<files::Rename>,
+    marquee: Option<files::Marquee>,
+    /// Whether a rubber band is being dragged, for the raw mouse listener.
+    marquee_active: Rc<Cell<bool>>,
+    /// Where files can be dropped in this window, recorded while painting.
+    drop_zones: SharedZones,
+    /// The zone a file drag hovers.
+    drop_hover: Option<SpotKey>,
+    /// Change notifications for the listed folder.
+    watch: Option<hooks::Watch>,
+    /// Change notifications for the Recycle Bin (its icon, its listing).
+    bin_watch: Option<hooks::Watch>,
+    /// A drag holding folders is over the window: the favorites heading takes them.
+    dragging_folders: bool,
+    /// A reload after changes in the folder, waiting for more changes to settle.
+    reload_timer: Option<Task<()>>,
+    error_timer: Option<Task<()>>,
+
     // Tab dragging (see `tabs`).
-    tab_strip: Rc<std::cell::Cell<Bounds<Pixels>>>,
+    tab_strip: Rc<Cell<Bounds<Pixels>>>,
+    /// Bounds of each tab in the last frame.
+    tab_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     drag_preview: Option<DragPreviewWindow>,
-    drag_target: Option<(WeakEntity<FileManager>, AnyWindowHandle)>,
-    /// A tab from another window hovers over this one: its title.
-    incoming_tab: Option<SharedString>,
+    drag_target: Option<tabs::DragTarget>,
+    /// A tab from another window hovers this one: where it would land.
+    incoming_tab: Option<tabs::IncomingTab>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -243,11 +387,13 @@ impl FileManager {
     fn new(tabs: Vec<Tab>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         assert!(!tabs.is_empty(), "a window needs at least one tab");
         let settings = Settings::get(cx).clone();
-        // Headers sort through `sort_by`, not the table's own sort cycle; a click on one
-        // must not select (highlight) its column.
+        let drop_zones = SharedZones::default();
+        // Rows are selected by `files` (the same way as in the grid), not by the table;
+        // headers sort through `sort_by`, not the table's own sort cycle, and a click
+        // on one must not select (highlight) its column.
         let table = cx.new(|cx| {
             TableState::new(FileTable::new(), window, cx)
-                .row_selectable(true)
+                .row_selectable(false)
                 .col_selectable(false)
                 .col_movable(false)
                 .sortable(false)
@@ -255,9 +401,15 @@ impl FileManager {
         let this = cx.entity().downgrade();
         table.update(cx, |t, _| {
             let d = t.delegate_mut();
+            d.set_show_hidden(settings.show_hidden);
+            d.set_zones(drop_zones.clone());
             let toggle = this.clone();
             d.set_on_toggle(Rc::new(move |path, expand, window, cx| {
                 toggle.update(cx, |fm, cx| fm.toggle_folder(path, expand, window, cx)).ok();
+            }));
+            let row = this.clone();
+            d.set_on_row(Rc::new(move |event, window, cx| {
+                row.update(cx, |fm, cx| fm.on_row(event, window, cx)).ok();
             }));
             d.set_on_header(Rc::new(move |click, window, cx| {
                 this.update(cx, |fm, cx| match click {
@@ -271,10 +423,14 @@ impl FileManager {
         let path_input = cx.new(|cx| InputState::new(window, cx));
         let mode = tabs[0].view;
         let view_slider =
-            cx.new(|_| SliderState::new().min(0.).max(5.).step(1.).default_value(mode.slider_value()));
+            cx.new(|_| SliderState::new().min(0.).max((ViewMode::ALL.len() - 1) as f32).step(1.).default_value(mode.slider_value()));
 
+        let table_focus = table.read(cx).focus_handle(cx);
         let subscriptions = vec![
             cx.subscribe_in(&table, window, Self::on_table_event),
+            // The keyboard belongs to the file view: the table's own bindings (arrows,
+            // Home, End…) would shadow its actions.
+            cx.on_focus(&table_focus, window, |this, window, cx| this.focus_view(window, cx)),
             cx.subscribe_in(&filter, window, |this, input, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     let q = input.read(cx).value();
@@ -282,12 +438,12 @@ impl FileManager {
                         t.delegate_mut().set_filter(&q);
                         t.refresh(cx);
                     });
-                    this.grid_selected = None;
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => {
                     if this.table.read(cx).delegate().len() > 0 {
-                        this.select_row(0, cx);
+                        this.update_selection(cx, |d| d.select_only(0));
+                        this.scroll_to_row(0, cx);
                     }
                     this.focus_view(window, cx);
                 }
@@ -302,11 +458,15 @@ impl FileManager {
             cx.observe_global_in::<Settings>(window, |this, window, cx| {
                 let placeholder = i18n::t(cx).filter;
                 this.filter.update(cx, |f, cx| f.set_placeholder(placeholder, window, cx));
+                this.apply_list_settings(cx);
             }),
         ];
 
+        // The Recycle Bin's icon: empty or full.
+        bin::check_bin(cx);
         let mut this = Self {
             focus: cx.focus_handle(),
+            hwnd: shell::hwnd(window).unwrap_or(0),
             logo: crate::assets::logo(),
             tabs,
             active: 0,
@@ -328,14 +488,28 @@ impl FileManager {
             sidebar_collapsed: settings.sidebar_collapsed,
             resizing_sidebar: false,
             sidebar_click: None,
-            grid_focus: cx.focus_handle(),
             grid_scroll: UniformListScrollHandle::new(),
-            grid_selected: None,
+            flow: Default::default(),
+            table_bounds: Rc::default(),
             grid_columns: 1,
             zoom_pixels: 0.,
             view_slider,
             preview_pane: settings.preview_pane,
+            files_focus: cx.focus_handle(),
+            files_bounds: Rc::default(),
+            press: Rc::default(),
+            rename: None,
+            marquee: None,
+            marquee_active: Rc::default(),
+            drop_zones,
+            drop_hover: None,
+            watch: None,
+            bin_watch: None,
+            dragging_folders: false,
+            reload_timer: None,
+            error_timer: None,
             tab_strip: Rc::default(),
+            tab_bounds: Rc::default(),
             drag_preview: None,
             drag_target: None,
             incoming_tab: None,
@@ -353,23 +527,54 @@ impl FileManager {
         self.tab().view
     }
 
-    fn view_focus(&self, cx: &App) -> FocusHandle {
-        if self.view().is_table() { self.table.read(cx).focus_handle(cx) } else { self.grid_focus.clone() }
+    /// Keyboard focus to the file view.
+    fn focus_view(&self, window: &mut Window, cx: &mut App) {
+        self.files_focus.focus(window, cx);
     }
 
-    /// Keyboard focus to the file view of the current mode.
-    fn focus_view(&self, window: &mut Window, cx: &mut App) {
-        self.view_focus(cx).focus(window, cx);
+    /// What a Win32 hook of this window received.
+    fn on_hook(&mut self, event: HookEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            HookEvent::TabHover { title, cursor } => self.show_incoming(title.into(), cursor, window, cx),
+            HookEvent::TabLeave => self.clear_incoming(cx),
+            HookEvent::TabDrop { tab, cursor } => self.receive_tab(tab, cursor, window, cx),
+            HookEvent::FolderChanged => self.folder_changed(window, cx),
+            HookEvent::DropHover(spot) => self.set_drop_hover(spot, cx),
+            HookEvent::DropFiles { paths, target, kind } => self.drop_files(paths, target, kind, window, cx),
+            HookEvent::DraggingFolders(dragging) => {
+                self.dragging_folders = dragging;
+                cx.notify();
+            }
+            HookEvent::BinChanged => self.bin_changed(window, cx),
+            HookEvent::FileDragEnded { dropped } => {
+                // Moved away, or into a subfolder: the change notification may be late.
+                if dropped {
+                    self.reload(files::Reselect::Keep, window, cx).detach();
+                }
+            }
+        }
     }
 
     // ---- navigation -------------------------------------------------------
 
     /// Navigates the active tab. `record` pushes the current folder on the back stack.
     fn navigate(&mut self, path: PathBuf, record: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_to(path, record, None, window, cx);
+    }
+
+    /// `navigate`, selecting the item named `select` once listed.
+    fn navigate_to(
+        &mut self,
+        path: PathBuf,
+        record: bool,
+        select: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if path == self.tab().path {
-            return self.load(None, window, cx);
+            return self.load(select, window, cx);
         }
-        let (view, had_focus) = (self.view(), self.view_focus(cx).contains_focused(window, cx));
+        let (view, had_focus) = (self.view(), self.files_focus.contains_focused(window, cx));
         let tab = &mut self.tabs[self.active];
         let previous = std::mem::replace(&mut tab.path, path);
         if record {
@@ -381,11 +586,9 @@ impl FileManager {
         // The snackbar was about the folder being left.
         self.snackbar = None;
         // Coming back up from a child: reselect the folder we came from.
-        let select = previous
-            .parent()
-            .filter(|p| *p == self.tab().path)
-            .and(previous.file_name())
-            .map(|n| n.to_string_lossy().into_owned());
+        let select = select.or_else(|| {
+            previous.parent().filter(|p| *p == self.tab().path).and(previous.file_name()).map(|n| n.to_string_lossy().into_owned())
+        });
         self.load(select, window, cx);
         if self.view() != view {
             self.sync_view_slider(window, cx);
@@ -395,27 +598,36 @@ impl FileManager {
         }
     }
 
-    /// Lists the active tab's folder on a background thread.
+    /// Lists the active tab's folder on a background thread, and watches it for changes.
     fn load(&mut self, select: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.tab().path.clone();
         let (tree, sort) = (self.view() == ViewMode::Tree, self.tab().sort);
+        let settings = Settings::get(cx);
+        let show_hidden = settings.show_hidden;
+        let media = if self.view() == ViewMode::CoverFlow { settings.media_filter } else { fs::MediaFilter::All };
         self.load_generation += 1;
         let generation = self.load_generation;
         self.error = None;
-        self.grid_selected = None;
+        self.rename = None;
+        self.reload_timer = None;
+        // The Recycle Bin is always watched (`bin_watch`).
+        self.watch = if fs::is_recycle_bin(&path) { None } else { hooks::watch(self.hwnd, &path) };
         self.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.filter.update(cx, |f, cx| f.set_value("", window, cx));
         self.table.update(cx, |t, cx| {
             let d = t.delegate_mut();
             d.loading = true;
+            d.renaming = None;
             d.set_tree(tree);
             d.set_sort(sort);
+            d.set_show_hidden(show_hidden);
+            d.set_media_filter(media);
             d.set_folder(path.clone());
             d.set_filter("");
             cx.notify();
         });
 
-        let listing = cx.background_spawn(async move { fs::list(&path) });
+        let listing = cx.background_spawn(async move { list_folder(&path) });
         cx.spawn(async move |this, cx| {
             let result = listing.await;
             this.update(cx, |this, cx| {
@@ -433,20 +645,15 @@ impl FileManager {
                     let d = t.delegate_mut();
                     d.loading = false;
                     d.set_entries(entries);
-                    let row = select.as_deref().and_then(|n| t.delegate().row_of(n));
-                    t.refresh(cx);
-                    match row {
-                        Some(row) => {
-                            t.set_selected_row(row, cx);
-                            t.scroll_to_row(row, cx);
-                        }
-                        None => t.clear_selection(cx),
+                    let row = select.as_deref().and_then(|n| d.row_of(n));
+                    if let Some(row) = row {
+                        d.select_only(row);
                     }
+                    t.refresh(cx);
                     row
                 });
                 if let Some(row) = row {
-                    this.grid_selected = Some(row);
-                    this.scroll_grid_to(row);
+                    this.scroll_to_row(row, cx);
                 }
                 cx.notify();
             })
@@ -490,68 +697,37 @@ impl FileManager {
         .detach();
     }
 
-    fn selected_row(&self, cx: &App) -> Option<usize> {
-        if self.view().is_table() { self.table.read(cx).selected_row() } else { self.grid_selected }
-    }
-
-    fn selected_entry(&self, cx: &App) -> Option<fs::Entry> {
-        let row = self.selected_row(cx)?;
-        self.table.read(cx).delegate().entry(row).cloned()
-    }
-
-    /// Selects the top-level item named `name` again after the rows moved (new sorting or
-    /// view), in the current view; nothing if it is gone.
-    fn reselect(&mut self, name: Option<SharedString>, cx: &mut Context<Self>) {
-        let row = name.and_then(|name| self.table.read(cx).delegate().row_of(&name));
-        let table = self.view().is_table();
-        self.grid_selected = row;
-        self.table.update(cx, |t, cx| match row {
-            Some(row) if table => {
-                t.set_selected_row(row, cx);
-                t.scroll_to_row(row, cx);
-            }
-            _ => t.clear_selection(cx),
-        });
-        if let Some(row) = row {
-            self.scroll_grid_to(row);
-        }
-    }
-
-    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
-        if self.view().is_table() {
-            self.table.update(cx, |t, cx| t.set_selected_row(row, cx));
-        } else {
-            self.grid_selected = Some(row);
-            self.scroll_grid_to(row);
-            cx.notify();
-        }
-    }
-
+    /// Folders open in the tab, and so do shortcuts to folders; files open in their app.
     fn open_entry(&mut self, entry: fs::Entry, window: &mut Window, cx: &mut Context<Self>) {
-        if entry.is_dir {
+        if entry.origin.is_some() {
+            // In the Recycle Bin: a file can still be looked at, a folder not entered.
+            if !entry.is_dir {
+                shell::open(&entry.path);
+            }
+        } else if entry.is_dir {
             self.navigate(entry.path, true, window, cx);
+        } else if let Some(folder) = entry.is_shortcut().then(|| shell::shortcut_target(&entry.path)).flatten().filter(|t| t.is_dir()) {
+            self.navigate(folder, true, window, cx);
         } else {
             shell::open(&entry.path);
         }
+    }
+
+    /// Shows `target` in its folder, selected ("Open file location").
+    fn reveal(&mut self, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(folder), Some(name)) = (target.parent(), target.file_name()) else { return };
+        let name = name.to_string_lossy().into_owned();
+        self.navigate_to(folder.to_path_buf(), true, Some(name), window, cx);
     }
 
     fn on_table_event(
         &mut self,
         table: &Entity<TableState<FileTable>>,
         ev: &TableEvent,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match ev {
-            TableEvent::DoubleClickedRow(row) => {
-                if let Some(e) = table.read(cx).delegate().entry(*row).cloned() {
-                    self.open_entry(e, window, cx);
-                }
-            }
-            // No `RightClickedRow` here: gpui-component also emits `RightClickedRow(None)`
-            // from `set_selected_row` (every left click / arrow key) just to clear its
-            // highlight, so it cannot tell "right click on empty space" apart.
-            // See `on_table_right_mouse_down`.
             // `TableState::refresh` resets the widths to the delegate's columns.
             TableEvent::ColumnWidthsChanged(widths) => {
                 let widths = widths.clone();
@@ -580,21 +756,15 @@ impl FileManager {
     }
 
     fn go_up(&mut self, _: &GoUp, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(parent) = self.tab().path.parent().map(Path::to_path_buf) {
+        if let Some(parent) = fs::parent(&self.tab().path).map(Path::to_path_buf) {
             self.navigate(parent, true, window, cx);
         }
     }
 
+    /// Lists the folder again, keeping the selection, the filter and the scroll position.
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
-        let keep = self.selected_entry(cx).map(|e| e.name.to_string());
         self.drives = shell::drives();
-        self.load(keep, window, cx);
-    }
-
-    fn open_selected(&mut self, _: &OpenSelected, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(e) = self.selected_entry(cx) {
-            self.open_entry(e, window, cx);
-        }
+        self.reload(files::Reselect::Keep, window, cx).detach();
     }
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -612,8 +782,17 @@ impl FileManager {
     }
 
     fn insert_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        self.tabs.push(tab);
-        self.switch_tab(self.tabs.len() - 1, window, cx);
+        self.insert_tab_at(tab, self.tabs.len(), window, cx);
+    }
+
+    /// Inserts `tab` at `index` and activates it.
+    fn insert_tab_at(&mut self, tab: Tab, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let index = index.min(self.tabs.len());
+        self.tabs.insert(index, tab);
+        if index <= self.active {
+            self.active += 1;
+        }
+        self.switch_tab(index, window, cx);
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -625,7 +804,7 @@ impl FileManager {
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.len() == 1 {
+        if self.tabs.len() == 1 || ix >= self.tabs.len() {
             return;
         }
         self.tabs.remove(ix);
@@ -653,13 +832,31 @@ impl FileManager {
         self.filter.read(cx).focus_handle(cx).focus(window, cx);
     }
 
+    /// Ctrl + H: hidden files, in every window (a setting).
     fn toggle_hidden(&mut self, _: &ToggleHidden, _: &mut Window, cx: &mut Context<Self>) {
-        self.table.update(cx, |t, cx| {
-            t.delegate_mut().toggle_hidden();
-            t.refresh(cx);
-        });
-        self.grid_selected = None;
-        cx.notify();
+        Settings::update(cx, |s| s.show_hidden = !s.show_hidden);
+    }
+
+    /// What the listing shows follows the settings: hidden files, and the media filter
+    /// of the cover flow view.
+    fn apply_list_settings(&mut self, cx: &mut Context<Self>) {
+        let settings = Settings::get(cx);
+        let show_hidden = settings.show_hidden;
+        let media = if self.view() == ViewMode::CoverFlow { settings.media_filter } else { fs::MediaFilter::All };
+        let changed = {
+            let d = self.table.read(cx).delegate();
+            d.shows_hidden() != show_hidden || d.media_filter() != media
+        };
+        if changed {
+            self.table.update(cx, |t, cx| {
+                let d = t.delegate_mut();
+                d.set_show_hidden(show_hidden);
+                d.set_media_filter(media);
+                t.refresh(cx);
+            });
+            self.scroll_to_cursor(cx);
+            cx.notify();
+        }
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
@@ -716,7 +913,20 @@ impl FileManager {
                                         theme::apply(cx);
                                     })
                             })))
-                        }),
+                        })
+                        .child(section(s.files_section, cx))
+                        .child(
+                            Switch::new("show-hidden")
+                                .label(s.show_hidden)
+                                .checked(settings.show_hidden)
+                                .on_click(|checked, _, cx| Settings::update(cx, |s| s.show_hidden = *checked)),
+                        )
+                        .child(
+                            Switch::new("show-extensions")
+                                .label(s.show_extensions)
+                                .checked(settings.show_extensions)
+                                .on_click(|checked, _, cx| Settings::update(cx, |s| s.show_extensions = *checked)),
+                        ),
                 )
         });
     }
@@ -767,27 +977,11 @@ impl FileManager {
         )
     }
 
-    /// Bubble phase of a right mouse-down anywhere over the table. The row's own
-    /// handler (child, runs first) has already set `right_clicked_row`; the capture
-    /// handler cleared it beforehand, so `None` means empty space → folder background menu.
-    fn on_table_right_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let t = self.table.read(cx);
-        let entry = t.right_clicked_row().and_then(|r| t.delegate().entry(r)).cloned();
-        self.show_menu(menu::MenuTarget::from_entry(entry), ev, window, cx);
-    }
-
-    fn render_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_table(&self) -> impl IntoElement {
+        let bounds = self.table_bounds.clone();
         div()
             .size_full()
-            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                if ev.button == MouseButton::Right {
-                    this.table.update(cx, |t, cx| t.set_right_clicked_row(None, cx));
-                }
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| this.on_table_right_mouse_down(ev, window, cx)),
-            )
+            .on_prepaint(move |b, _, _| bounds.set(b))
             .child(DataTable::new(&self.table).bordered(false).small())
     }
 }
@@ -800,11 +994,20 @@ impl Focusable for FileManager {
 
 impl Render for FileManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Painting records the drop zones of this frame.
+        self.drop_zones.borrow_mut().clear();
+        files::forget_stale_cut(cx);
         // First: it measures the sidebar width the grid lays its columns out in.
         let sidebar = self.render_sidebar(window, cx).into_any_element();
         let mode = self.view();
-        let content = if mode.is_table() {
-            self.render_table(cx).into_any_element()
+        let content = if mode == ViewMode::CoverFlow {
+            v_flex()
+                .size_full()
+                .child(self.render_cover_flow(window, cx))
+                .child(div().relative().flex_1().min_h_0().child(self.render_table()).child(self.render_flow_handle(cx)))
+                .into_any_element()
+        } else if mode.is_table() {
+            self.render_table().into_any_element()
         } else {
             self.render_grid(mode, window, cx)
         };
@@ -827,20 +1030,27 @@ impl Render for FileManager {
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_preview))
+            .on_action(cx.listener(Self::new_folder))
             // Mouse back/forward buttons.
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx)))
             .on_drag_move(cx.listener(Self::tab_drag_moved))
             .on_drag_move(cx.listener(Self::sidebar_resize_moved))
+            .on_drag_move(cx.listener(Self::flow_resize_moved))
+            // A tab drag over this window from another one keeps the mouse captured
+            // there: a move arriving here means it is over.
+            .on_mouse_move(cx.listener(|this, _, _, cx| this.clear_incoming(cx)))
             // End of a drag: a tab released outside the window moves or detaches; any
             // other release ends tab and sidebar drags.
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.release_tab_outside(window, cx);
                 this.end_sidebar_resize(cx);
+                this.end_flow_resize(cx);
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.end_tab_drag(cx);
                 this.end_sidebar_resize(cx);
+                this.end_flow_resize(cx);
             }))
             .size_full()
             .bg(cx.theme().background)
@@ -868,7 +1078,7 @@ impl Render for FileManager {
                                         // Before the files: capture-phase listeners run in paint
                                         // order, and the table's scroller stops the wheel there.
                                         .child(self.zoom_listener(cx))
-                                        .child(content)
+                                        .child(self.render_files(content, cx))
                                         .children(self.render_snackbar(cx)),
                                 )
                                 .when(self.preview_pane, |d| d.child(self.render_preview_pane(cx))),
@@ -876,6 +1086,6 @@ impl Render for FileManager {
                         .child(self.render_status(cx)),
                 ),
             )
-            .when_some(self.context_menu.as_ref(), |d, m| d.child(m.render()))
+            .when_some(self.context_menu.as_ref(), |d, m| d.child(m.menu.clone()))
     }
 }

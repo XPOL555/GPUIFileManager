@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Per-machine MSI (WiX 5). Built by installer/build.ps1, which passes Version, ExePath and IconPath. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="FileManager"
+      Manufacturer="Paolo Falomo"
+      Version="$(Version)"
+      UpgradeCode="48e339bb-3336-4c54-bc58-16afda07fde2"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <!-- Installing a newer version replaces the old one; older ones are refused. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of FileManager is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="app.ico" SourceFile="$(IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="app.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/XPOL555/GPUIFileManager" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="FileManager" />
+    </StandardDirectory>
+
+    <!-- All-users Start menu entry, created with the exe (no separate component needed). -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Bitness="always64">
+        <File Id="filemanager.exe" Source="$(ExePath)" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FileManager"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        </File>
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="FileManager" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+    </Feature>
+  </Package>
+</Wix>

@@ -36,18 +36,19 @@ mod win {
     use super::*;
     use std::os::windows::ffi::OsStrExt;
 
-    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Foundation::{RECT, SIZE};
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GetDIBits, GetObjectW, HBITMAP,
+        DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC,
     };
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
     use windows::Win32::UI::Shell::{
-        IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_FLAGS,
-        SHGFI_OVERLAYINDEX, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetImageList,
-        SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_SMALL, SIIGBF_THUMBNAILONLY,
+        ILFree, IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName, SHFILEINFOW, SHGFI_FLAGS, SHGFI_ICON,
+        SHGFI_OVERLAYINDEX, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGSI_SYSICONINDEX, SHGetFileInfoW,
+        SHGetImageList, SHGetStockIconInfo, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_SMALL, SHParseDisplayName, SHSTOCKICONID,
+        SHSTOCKICONINFO, SIIGBF_THUMBNAILONLY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
     use windows::core::{Interface, PCWSTR};
@@ -74,7 +75,8 @@ mod win {
             flags |= SHGFI_USEFILEATTRIBUTES;
         }
         if overlay {
-            flags |= SHGFI_OVERLAYINDEX;
+            // The overlay index only comes with an icon handle.
+            flags |= SHGFI_OVERLAYINDEX | SHGFI_ICON;
         }
         let ok = unsafe {
             SHGetFileInfoW(
@@ -85,7 +87,39 @@ mod win {
                 SHGFI_FLAGS(flags.0),
             )
         };
+        if !info.hIcon.is_invalid() {
+            unsafe {
+                let _ = DestroyIcon(info.hIcon);
+            }
+        }
         (ok != 0).then_some(info.iIcon)
+    }
+
+    /// Index of a shell item that is not a file (`shell:` or `::{CLSID}` names), from
+    /// the first of `names` the shell knows.
+    pub fn shell_icon_index(names: &[&str]) -> Option<i32> {
+        names.iter().find_map(|name| unsafe {
+            let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut pidl = std::ptr::null_mut();
+            SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).ok()?;
+            let mut info = SHFILEINFOW::default();
+            let ok = SHGetFileInfoW(
+                PCWSTR(pidl as *const u16),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_PIDL | SHGFI_SYSICONINDEX,
+            );
+            ILFree(Some(pidl));
+            (ok != 0).then_some(info.iIcon)
+        })
+    }
+
+    /// Index of one of the shell's stock icons (`SIID_*`).
+    pub fn stock_icon_index(id: i32) -> Option<i32> {
+        let mut info = SHSTOCKICONINFO { cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32, ..Default::default() };
+        unsafe { SHGetStockIconInfo(SHSTOCKICONID(id), SHGSI_SYSICONINDEX, &mut info) }.ok()?;
+        Some(info.iSysImageIndex)
     }
 
     pub fn icon_bitmap(index: i32, size: IconSize) -> Option<Bitmap> {
@@ -189,6 +223,76 @@ mod win {
         }
     }
 
+    /// A menu item's bitmap (32 bpp premultiplied, or without alpha) as straight BGRA.
+    /// `None` for the special values menus use in place of a bitmap.
+    pub fn menu_bitmap(bitmap: HBITMAP) -> Option<Bitmap> {
+        // HBMMENU_CALLBACK (-1) and the HBMMENU_* system glyphs (1 to 11). Real handles
+        // are 32-bit values sign-extended: they may look negative.
+        let value = bitmap.0 as isize;
+        if value == -1 || (0..=11).contains(&value) {
+            return None;
+        }
+        let mut b = unsafe { read_bitmap(bitmap)? };
+        if b.bgra.chunks_exact(4).all(|px| px[3] == 0) {
+            for px in b.bgra.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+        } else {
+            unpremultiply(&mut b.bgra);
+        }
+        Some(b)
+    }
+
+    /// Pixels something draws into a transparent `width` × `height` canvas (owner-drawn
+    /// menu icons). Drawing without alpha leaves it at 0: those pixels count as opaque
+    /// unless black.
+    pub fn draw_to_bitmap(width: u32, height: u32, draw: impl FnOnce(HDC, RECT)) -> Option<Bitmap> {
+        use windows::Win32::Graphics::Gdi::{CreateDIBSection, GdiFlush, SelectObject};
+        if width == 0 || height == 0 || width > 256 || height > 256 {
+            return None;
+        }
+        unsafe {
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let dc = CreateCompatibleDC(None);
+            let mut bits = std::ptr::null_mut();
+            let Ok(dib) = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) else {
+                let _ = DeleteDC(dc);
+                return None;
+            };
+            let old = SelectObject(dc, dib.into());
+            draw(dc, RECT { left: 0, top: 0, right: width as i32, bottom: height as i32 });
+            let _ = GdiFlush();
+            let len = (width * height * 4) as usize;
+            let mut bgra = std::slice::from_raw_parts(bits as *const u8, len).to_vec();
+            SelectObject(dc, old);
+            let _ = DeleteObject(dib.into());
+            let _ = DeleteDC(dc);
+            if bgra.chunks_exact(4).all(|px| px[3] == 0) {
+                for px in bgra.chunks_exact_mut(4) {
+                    px[3] = if px[..3] == [0, 0, 0] { 0 } else { 255 };
+                }
+            } else {
+                unpremultiply(&mut bgra);
+            }
+            // Nothing drawn at all.
+            if bgra.chunks_exact(4).all(|px| px[3] == 0) {
+                return None;
+            }
+            Some(Bitmap { width, height, bgra })
+        }
+    }
+
     fn unpremultiply(bgra: &mut [u8]) {
         for px in bgra.chunks_exact_mut(4) {
             let a = px[3] as u32;
@@ -230,6 +334,12 @@ mod fallback {
     use super::*;
     pub fn init_worker_thread() {}
     pub fn icon_index(_path: &Path, _attrs: u32, _from_attributes: bool, _overlay: bool) -> Option<i32> {
+        None
+    }
+    pub fn shell_icon_index(_names: &[&str]) -> Option<i32> {
+        None
+    }
+    pub fn stock_icon_index(_id: i32) -> Option<i32> {
         None
     }
     pub fn icon_bitmap(_index: i32, _size: IconSize) -> Option<Bitmap> {

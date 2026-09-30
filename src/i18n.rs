@@ -49,14 +49,27 @@ pub fn language(cx: &App) -> Language {
     cx.try_global::<Settings>().map(|s| s.language).unwrap_or_default()
 }
 
-/// Applies the language stored in `Settings` to gpui-component's own strings. Call once at startup.
+/// Applies the language stored in `Settings` to gpui-component's own strings, and to
+/// the text under dragged files. Call once at startup.
 pub fn init(cx: &App) {
-    gpui_kit::component::set_locale(language(cx).code());
+    apply(language(cx));
 }
 
 pub fn set_language(language: Language, cx: &mut App) {
-    gpui_kit::component::set_locale(language.code());
+    apply(language);
     Settings::update(cx, |s| s.language = language);
+}
+
+fn apply(language: Language) {
+    gpui_kit::component::set_locale(language.code());
+    let s = language.strings();
+    crate::dnd::set_labels(crate::dnd::DropLabels {
+        move_to: s.drop_move,
+        copy_to: s.drop_copy,
+        add_to: s.drop_add,
+        favorites: s.favorites_name,
+        recycle_bin: s.recycle_bin,
+    });
 }
 
 /// Strings for the current language.
@@ -128,7 +141,56 @@ pub struct Strings {
     pub update_available: fn(&str) -> String,
     pub open_release: &'static str,
     pub update_failed: &'static str,
-    view_modes: [&'static str; 6],
+    pub cut: &'static str,
+    pub copy: &'static str,
+    pub paste: &'static str,
+    pub paste_into: &'static str,
+    pub rename: &'static str,
+    pub delete: &'static str,
+    /// Also the name of new folders, as Explorer names them.
+    pub new_folder: &'static str,
+    /// "3 items selected".
+    pub items_selected: fn(usize) -> String,
+    pub invalid_name: &'static str,
+    pub clipboard_failed: &'static str,
+    pub operation_failed: &'static str,
+    /// Under dragged files; `%1` is the folder.
+    pub drop_move: &'static str,
+    pub drop_copy: &'static str,
+    /// Under folders dragged onto the favorites; `%1` is `favorites_name`.
+    pub drop_add: &'static str,
+    pub favorites_name: &'static str,
+    /// On the favorites heading while folders are dragged.
+    pub favorites_drop: &'static str,
+    pub shortcut: &'static str,
+    pub internet_shortcut: &'static str,
+    pub open_file_location: &'static str,
+    pub files_section: &'static str,
+    pub show_extensions: &'static str,
+    pub recycle_bin: &'static str,
+    pub restore: &'static str,
+    pub restore_all: &'static str,
+    pub empty_bin: &'static str,
+    pub delete_permanently: &'static str,
+    pub col_origin: &'static str,
+    pub col_deleted: &'static str,
+    pub purge_title: &'static str,
+    /// "3 items will be deleted for good."
+    pub purge_message: fn(usize) -> String,
+    pub cancel: &'static str,
+    pub bin_empty: &'static str,
+    pub view: &'static str,
+    pub sort_by: &'static str,
+    pub ascending: &'static str,
+    pub descending: &'static str,
+    /// Cover flow: "12 of 340".
+    pub item_of: fn(usize, usize) -> String,
+    pub no_media: &'static str,
+    /// Key names as printed on keyboards.
+    pub key_enter: &'static str,
+    pub key_delete: &'static str,
+    media_filters: [&'static str; 3],
+    view_modes: [&'static str; 7],
     themes: [&'static str; 3],
     accents: [&'static str; 5],
     known_folders: [&'static str; KnownFolder::COUNT],
@@ -141,6 +203,10 @@ impl Strings {
 
     pub fn view_mode(&self, mode: ViewMode) -> &'static str {
         self.view_modes[mode as usize]
+    }
+
+    pub fn media_filter(&self, filter: crate::fs::MediaFilter) -> &'static str {
+        self.media_filters[filter as usize]
     }
 
     pub fn theme_name(&self, theme: ThemeChoice) -> &'static str {
@@ -212,7 +278,48 @@ static EN: Strings = Strings {
     update_available: |v| format!("Version {v} is available"),
     open_release: "Open release page",
     update_failed: "Couldn't reach GitHub",
-    view_modes: ["Details", "Tree", "List", "M icons", "L icons", "XL icons"],
+    cut: "Cut",
+    copy: "Copy",
+    paste: "Paste",
+    paste_into: "Paste into folder",
+    rename: "Rename",
+    delete: "Delete",
+    new_folder: "New folder",
+    items_selected: |n| format!("{n} items selected"),
+    invalid_name: "A name can't be empty or contain any of these characters: \\ / : * ? \" < > |",
+    clipboard_failed: "Couldn't use the clipboard",
+    operation_failed: "The operation failed",
+    drop_move: "Move to %1",
+    drop_copy: "Copy to %1",
+    drop_add: "Add to %1",
+    favorites_name: "Favorites",
+    favorites_drop: "Drop here to add",
+    shortcut: "Shortcut",
+    internet_shortcut: "Internet shortcut",
+    open_file_location: "Open file location",
+    files_section: "Files",
+    show_extensions: "Show file extensions",
+    recycle_bin: "Recycle Bin",
+    restore: "Restore",
+    restore_all: "Restore all items",
+    empty_bin: "Empty Recycle Bin",
+    delete_permanently: "Delete permanently",
+    col_origin: "Original location",
+    col_deleted: "Date deleted",
+    purge_title: "Delete permanently?",
+    purge_message: |n| if n == 1 { "This item will be deleted for good.".into() } else { format!("These {n} items will be deleted for good.") },
+    cancel: "Cancel",
+    bin_empty: "The Recycle Bin is empty",
+    view: "View",
+    sort_by: "Sort by",
+    ascending: "Ascending",
+    descending: "Descending",
+    item_of: |i, n| format!("{i} of {n}"),
+    no_media: "No photos or videos here",
+    key_enter: "Enter",
+    key_delete: "Del",
+    media_filters: ["All files", "Photos and videos", "Photos"],
+    view_modes: ["Details", "Tree", "List", "M icons", "L icons", "XL icons", "Cover Flow"],
     themes: ["Dark", "Dimmed", "Light"],
     accents: ["Blue", "Violet", "Teal", "Amber", "Rose"],
     known_folders: ["Home", "Desktop", "Downloads", "Documents", "Pictures", "Music", "Videos"],
@@ -278,7 +385,48 @@ static IT: Strings = Strings {
     update_available: |v| format!("È disponibile la versione {v}"),
     open_release: "Apri pagina della release",
     update_failed: "Impossibile contattare GitHub",
-    view_modes: ["Dettagli", "Albero", "Elenco", "Icone M", "Icone L", "Icone XL"],
+    cut: "Taglia",
+    copy: "Copia",
+    paste: "Incolla",
+    paste_into: "Incolla nella cartella",
+    rename: "Rinomina",
+    delete: "Elimina",
+    new_folder: "Nuova cartella",
+    items_selected: |n| format!("{n} elementi selezionati"),
+    invalid_name: "Un nome non può essere vuoto né contenere i caratteri: \\ / : * ? \" < > |",
+    clipboard_failed: "Impossibile usare gli appunti",
+    operation_failed: "L'operazione non è riuscita",
+    drop_move: "Sposta in %1",
+    drop_copy: "Copia in %1",
+    drop_add: "Aggiungi a %1",
+    favorites_name: "Preferiti",
+    favorites_drop: "Rilascia qui per aggiungere",
+    shortcut: "Collegamento",
+    internet_shortcut: "Collegamento Internet",
+    open_file_location: "Apri percorso file",
+    files_section: "File",
+    show_extensions: "Mostra estensioni dei file",
+    recycle_bin: "Cestino",
+    restore: "Ripristina",
+    restore_all: "Ripristina tutti gli elementi",
+    empty_bin: "Svuota cestino",
+    delete_permanently: "Elimina definitivamente",
+    col_origin: "Percorso originale",
+    col_deleted: "Data eliminazione",
+    purge_title: "Eliminare definitivamente?",
+    purge_message: |n| if n == 1 { "L'elemento verrà eliminato definitivamente.".into() } else { format!("{n} elementi verranno eliminati definitivamente.") },
+    cancel: "Annulla",
+    bin_empty: "Il cestino è vuoto",
+    view: "Visualizza",
+    sort_by: "Ordina per",
+    ascending: "Crescente",
+    descending: "Decrescente",
+    item_of: |i, n| format!("{i} di {n}"),
+    no_media: "Nessuna foto o video qui",
+    key_enter: "Invio",
+    key_delete: "Canc",
+    media_filters: ["Tutti i file", "Foto e video", "Solo foto"],
+    view_modes: ["Dettagli", "Albero", "Elenco", "Icone M", "Icone L", "Icone XL", "Cover Flow"],
     themes: ["Scuro", "Attenuato", "Chiaro"],
     accents: ["Blu", "Viola", "Verde acqua", "Ambra", "Rosa"],
     known_folders: ["Home", "Desktop", "Download", "Documenti", "Immagini", "Musica", "Video"],

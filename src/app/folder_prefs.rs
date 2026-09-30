@@ -5,13 +5,11 @@
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 
-use super::menu::menu_item;
 use super::*;
-use crate::fs::SortKey;
+use crate::context_menu::{MenuEntry, MenuItem};
+use crate::fs::{Sort, SortKey};
 
 /// How long the snackbar stays up when left alone.
 const SNACKBAR_TIMEOUT: Duration = Duration::from_secs(15);
@@ -35,7 +33,11 @@ impl FileManager {
     /// A click on a column header: sorts by it, or flips the direction if already sorted by it.
     pub(super) fn sort_by(&mut self, key: SortKey, cx: &mut Context<Self>) {
         let sort = self.tab().sort.clicked(key);
-        let keep = self.selected_entry(cx).map(|e| e.name.clone());
+        self.set_sort(sort, cx);
+    }
+
+    /// A sorting picked by hand: the tab's from now on, and the one of new tabs.
+    pub(super) fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
         tab.sort = sort;
         tab.picked_sort = sort;
@@ -43,7 +45,8 @@ impl FileManager {
             t.delegate_mut().set_sort(sort);
             cx.notify();
         });
-        self.reselect(keep, cx);
+        // The selection stays; keep it in sight.
+        self.scroll_to_cursor(cx);
         Settings::update(cx, |s| s.sort = sort);
         self.offer_to_keep(Pref::Sort, cx);
         cx.notify();
@@ -127,14 +130,31 @@ impl FileManager {
             Pref::Sort => (s.keep_sort, s.forget_sort),
             Pref::View => (s.keep_view, s.forget_view),
         };
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.min_w(px(230.))
-                .when(!kept, |menu| menu.item(menu_item(&this, keep, LucideIcon::Pin, move |fm, _, cx| fm.keep(pref, cx))))
-                .when(saved, |menu| {
-                    menu.item(menu_item(&this, forget, LucideIcon::PinOff, move |fm, _, cx| fm.forget(pref, cx)))
-                })
-        });
-        self.show_popup(menu, position, window, cx);
+        let mut items: Vec<MenuItem> = Vec::new();
+        if !kept {
+            let this = this.clone();
+            items.push(
+                MenuEntry::new(keep)
+                    .icon(LucideIcon::Pin)
+                    .on_click(move |_, cx| {
+                        this.update(cx, |fm, cx| fm.keep(pref, cx)).ok();
+                    })
+                    .into(),
+            );
+        }
+        if saved {
+            items.push(
+                MenuEntry::new(forget)
+                    .icon(LucideIcon::PinOff)
+                    .on_click(move |_, cx| {
+                        this.update(cx, |fm, cx| fm.forget(pref, cx)).ok();
+                    })
+                    .into(),
+            );
+        }
+        if !items.is_empty() {
+            self.show_items(items, position, None, shell::cursor_pos(), window, cx);
+        }
     }
 
     /// Whether the view shown is the one kept for the folder, for the view button.

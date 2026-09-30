@@ -52,7 +52,38 @@ enum IndexKey {
     Folder,
     Ext(SharedString),
     Path(PathBuf),
+    /// The user's folder, with the icon of Windows' Home.
+    Home,
+    /// Empty or full.
+    RecycleBin(bool),
 }
+
+/// How the icon of a key is found.
+enum Probe {
+    /// A file or a folder, maybe only by its name and attributes.
+    File { path: PathBuf, attrs: u32, from_attributes: bool, overlay: bool },
+    /// A shell item that is not a file: the first of these names that parses.
+    Shell(&'static [&'static str]),
+    /// A stock icon (`SIID_*`).
+    Stock(i32),
+}
+
+impl Probe {
+    fn index(&self) -> Option<i32> {
+        match self {
+            Probe::File { path, attrs, from_attributes, overlay } => {
+                shell_images::icon_index(path, *attrs, *from_attributes, *overlay)
+            }
+            Probe::Shell(names) => shell_images::shell_icon_index(names),
+            Probe::Stock(id) => shell_images::stock_icon_index(*id),
+        }
+    }
+}
+
+/// Windows 11's Home, else the folder of the user's files (Windows 10).
+const HOME_ICON: &[&str] = &["shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}", "shell:UsersFilesFolder"];
+const SIID_RECYCLER: i32 = 31;
+const SIID_RECYCLERFULL: i32 = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ThumbKey {
@@ -70,7 +101,7 @@ enum Pending {
 
 enum Job {
     /// Resolve the image list index of `probe`, then load its bitmap at `size`.
-    Index { key: IndexKey, probe: PathBuf, attrs: u32, from_attributes: bool, overlay: bool, size: IconSize },
+    Index { key: IndexKey, probe: Probe, size: IconSize },
     Image { index: i32, size: IconSize },
     Thumb(ThumbKey),
 }
@@ -92,8 +123,8 @@ impl Job {
 
     fn run(self) -> Done {
         match self {
-            Job::Index { key, probe, attrs, from_attributes, overlay, size } => {
-                let index = shell_images::icon_index(&probe, attrs, from_attributes, overlay);
+            Job::Index { key, probe, size } => {
+                let index = probe.index();
                 let bitmap = index.and_then(|i| shell_images::icon_bitmap(i, size));
                 Done::Index { key, index, size, bitmap }
             }
@@ -308,7 +339,7 @@ impl Icons {
     }
 
     fn icon(&mut self, e: &Entry, size: IconSize) -> Option<Arc<RenderImage>> {
-        let (key, probe, attrs, from_attributes, overlay) = index_key(e);
+        let (key, probe) = index_key(e);
         match self.index.get(&key).copied() {
             Some(-1) => None,
             Some(index) => {
@@ -319,7 +350,7 @@ impl Icons {
                 image
             }
             None => {
-                self.request(Job::Index { key, probe, attrs, from_attributes, overlay, size });
+                self.request(Job::Index { key, probe, size });
                 None
             }
         }
@@ -336,22 +367,58 @@ impl Icons {
     }
 }
 
-fn index_key(e: &Entry) -> (IndexKey, PathBuf, u32, bool, bool) {
-    let own = |overlay| (IndexKey::Path(e.path.clone()), e.path.clone(), e.attrs, false, overlay);
+fn index_key(e: &Entry) -> (IndexKey, Probe) {
+    let own = |overlay| {
+        let probe = Probe::File { path: e.path.clone(), attrs: e.attrs, from_attributes: false, overlay };
+        (IndexKey::Path(e.path.clone()), probe)
+    };
     if e.is_dir {
+        if crate::fs::is_recycle_bin(&e.path) {
+            let full = crate::recycle::looks_full();
+            return (IndexKey::RecycleBin(full), Probe::Stock(if full { SIID_RECYCLERFULL } else { SIID_RECYCLER }));
+        }
+        if crate::shell::is_home(&e.path) {
+            return (IndexKey::Home, Probe::Shell(HOME_ICON));
+        }
         // Drives and customized folders (desktop.ini marks them read-only or system,
         // like Explorer checks) have their own icon; every other folder shares one.
         if e.path.parent().is_none() || e.attrs & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM) != 0 {
             own(false)
         } else {
-            (IndexKey::Folder, PathBuf::from("folder"), FILE_ATTRIBUTE_DIRECTORY, true, false)
+            let probe = Probe::File {
+                path: PathBuf::from("folder"),
+                attrs: FILE_ATTRIBUTE_DIRECTORY,
+                from_attributes: true,
+                overlay: false,
+            };
+            (IndexKey::Folder, probe)
         }
     } else if OWN_ICON.contains(&e.ext.as_ref()) {
+        // Shortcuts get the arrow overlay.
         own(matches!(e.ext.as_ref(), "lnk" | "url"))
     } else {
-        let probe = PathBuf::from(format!("file.{}", e.ext));
-        (IndexKey::Ext(e.ext.clone()), probe, FILE_ATTRIBUTE_NORMAL, true, false)
+        let probe = Probe::File {
+            path: PathBuf::from(format!("file.{}", e.ext)),
+            attrs: FILE_ATTRIBUTE_NORMAL,
+            from_attributes: true,
+            overlay: false,
+        };
+        (IndexKey::Ext(e.ext.clone()), probe)
     }
+}
+
+/// The entry's native icon, once loaded (asked for otherwise).
+pub fn icon_image(e: &Entry, size: IconSize, cx: &mut App) -> Option<Arc<RenderImage>> {
+    cx.global_mut::<Icons>().icon(e, size)
+}
+
+/// The entry's thumbnail no larger than `px`: `Some(None)` when it has none (its icon
+/// stands for it), `None` while it loads.
+pub fn thumbnail_image(e: &Entry, px: u32, cx: &mut App) -> Option<Option<Arc<RenderImage>>> {
+    if !has_thumbnail(e) {
+        return Some(None);
+    }
+    cx.global_mut::<Icons>().thumbnail(e, px)
 }
 
 /// The entry's native icon drawn at `display` size, or a generic one while it loads.

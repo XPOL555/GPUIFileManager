@@ -3,10 +3,13 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 
 use super::*;
+use crate::dnd;
 use crate::fs::Entry;
 use crate::icons::{self, IconSize};
 
@@ -177,21 +180,39 @@ impl FileManager {
             // Breadcrumb: one clickable segment per ancestor; clicking the empty space
             // after them switches to the editable text path.
             let mut crumbs = h_flex().id("breadcrumb").flex_1().h_full().gap_0p5().overflow_hidden().cursor_text();
-            let ancestors: Vec<PathBuf> = tab.path.ancestors().map(Path::to_path_buf).collect();
+            // The Recycle Bin is a place of its own, with nothing above it.
+            let ancestors: Vec<PathBuf> = if fs::is_recycle_bin(&tab.path) {
+                vec![tab.path.clone()]
+            } else {
+                tab.path.ancestors().map(Path::to_path_buf).collect()
+            };
             for (i, p) in ancestors.into_iter().rev().enumerate() {
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| p.to_string_lossy().trim_end_matches('\\').to_string());
+                let name = if fs::is_recycle_bin(&p) {
+                    folder_name(&p, cx)
+                } else {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.to_string_lossy().trim_end_matches('\\').to_string())
+                };
                 if i > 0 {
                     crumbs = crumbs.child(Icon::new(IconName::ChevronRight).xsmall().text_color(cx.theme().muted_foreground));
                 }
-                crumbs = crumbs.child(Button::new(("crumb", i)).ghost().small().label(name).on_click(cx.listener(
+                // Files can be dropped on an ancestor folder.
+                let files_over = self.drop_hover == Some(SpotKey::Crumb(i));
+                let zone = dnd::zone(&self.drop_zones, SpotKey::Crumb(i), p.clone(), 2);
+                let button = Button::new(("crumb", i)).ghost().small().label(name).on_click(cx.listener(
                     move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.navigate(p.clone(), true, window, cx);
                     },
-                )));
+                ));
+                crumbs = crumbs.child(
+                    div()
+                        .rounded(cx.theme().radius)
+                        .when(files_over, |d| d.bg(cx.theme().drop_target))
+                        .child(button)
+                        .on_prepaint(zone),
+                );
             }
             crumbs.on_click(cx.listener(|this, _, window, cx| this.edit_path(&EditPath, window, cx))).into_any_element()
         };
@@ -204,7 +225,7 @@ impl FileManager {
             .border_color(cx.theme().border)
             .child(nav("back", IconName::ArrowLeft, !tab.back.is_empty(), Box::new(GoBack)))
             .child(nav("forward", IconName::ArrowRight, !tab.forward.is_empty(), Box::new(GoForward)))
-            .child(nav("up", IconName::ArrowUp, tab.path.parent().is_some(), Box::new(GoUp)))
+            .child(nav("up", IconName::ArrowUp, fs::parent(&tab.path).is_some(), Box::new(GoUp)))
             .child(nav("refresh", IconName::RefreshCw, true, Box::new(Refresh)))
             .child(location)
             .child(

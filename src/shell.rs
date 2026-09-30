@@ -33,6 +33,17 @@ impl KnownFolder {
 /// A point in physical screen pixels, as Win32 reports the cursor.
 pub type ScreenPoint = (i32, i32);
 
+/// The user's folder (`C:\Users\name`).
+pub fn home() -> Option<&'static Path> {
+    static HOME: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| known_folders().into_iter().find(|(k, _)| *k == KnownFolder::Home).map(|(_, p)| p))
+        .as_deref()
+}
+
+pub fn is_home(path: &Path) -> bool {
+    home().is_some_and(|home| home.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
+}
+
 /// Native handle of a window, e.g. a GPUI `Window`.
 pub fn hwnd(window: &impl raw_window_handle::HasWindowHandle) -> Option<isize> {
     match window.window_handle().ok()?.as_raw() {
@@ -51,7 +62,9 @@ mod win {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
+    };
     use windows::Win32::Networking::WinHttp::{
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
@@ -77,8 +90,9 @@ mod win {
     };
     use windows::Win32::UI::Shell::{SHOP_FILEPATH, SHObjectProperties};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreatePopupMenu, DestroyMenu, GA_ROOT, GetAncestor, GetCursorPos, GetWindowRect, SW_SHOWNORMAL,
-        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        CreatePopupMenu, DestroyMenu, GA_ROOT, GetAncestor, GetCursorPos, GetSystemMetrics, GetWindowRect,
+        SM_CXDRAG, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
+        TPM_RETURNCMD, TPM_RIGHTBUTTON,
         TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
         WM_MENUSELECT, WindowFromPoint,
     };
@@ -162,6 +176,23 @@ mod win {
         }
     }
 
+    /// Where a shortcut (`.lnk`) points, if it is a file or a folder (not a virtual item).
+    /// Reads the link without resolving it, so a missing target is not searched for.
+    pub fn shortcut_target(path: &Path) -> Option<PathBuf> {
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ};
+        use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+        unsafe {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+            let file: IPersistFile = link.cast().ok()?;
+            let w = wide(path.as_os_str());
+            file.Load(PCWSTR(w.as_ptr()), STGM_READ).ok()?;
+            let mut buffer = [0u16; 1024];
+            link.GetPath(&mut buffer, std::ptr::null_mut(), 0).ok()?;
+            let len = buffer.iter().position(|&c| c == 0).unwrap_or(0);
+            (len > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
+        }
+    }
+
     /// Explorer's Properties sheet. It runs on its own thread, so this returns immediately.
     pub fn show_properties(path: &Path) {
         let w = wide(path.as_os_str());
@@ -176,6 +207,28 @@ mod win {
             let _ = GetCursorPos(&mut pt);
         }
         (pt.x, pt.y)
+    }
+
+    /// A screen point in the client coordinates (physical pixels) of a window.
+    pub fn screen_to_client(hwnd: isize, (x, y): ScreenPoint) -> ScreenPoint {
+        let mut p = POINT { x, y };
+        unsafe {
+            let _ = ScreenToClient(HWND(hwnd as _), &mut p);
+        }
+        (p.x, p.y)
+    }
+
+    /// Brings a window, maybe of another process, to the front. Works while this
+    /// process has the user's input (it may pass the foreground on).
+    pub fn activate_window(hwnd: isize) {
+        unsafe {
+            let _ = SetForegroundWindow(HWND(hwnd as _));
+        }
+    }
+
+    /// How far the mouse moves with the button down before a press becomes a drag.
+    pub fn drag_distance() -> f32 {
+        (unsafe { GetSystemMetrics(SM_CXDRAG) } as f32).max(4.)
     }
 
     /// Top-level window under a screen point, or 0.
@@ -259,33 +312,40 @@ mod win {
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
+    /// Explorer's menu object for `paths`, or for the background of `folder` (New,
+    /// Paste, …) when `paths` is empty. `hwnd` owns what its commands show.
+    pub(crate) fn context_menu_of(folder: &Path, paths: &[PathBuf], hwnd: HWND) -> windows::core::Result<IContextMenu> {
+        unsafe {
+            if paths.is_empty() {
+                let w = wide(folder.as_os_str());
+                let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None)?;
+                let sf: IShellFolder = item.BindToHandler(None, &BHID_SFObject)?;
+                return sf.CreateViewObject(hwnd);
+            }
+            let mut pidls: Vec<*mut ITEMIDLIST> = Vec::with_capacity(paths.len());
+            for p in paths {
+                let w = wide(p.as_os_str());
+                let mut pidl = std::ptr::null_mut();
+                if SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).is_ok() {
+                    pidls.push(pidl);
+                }
+            }
+            let consts: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| *p as _).collect();
+            let arr = SHCreateShellItemArrayFromIDLists(&consts);
+            for p in pidls {
+                ILFree(Some(p));
+            }
+            let arr: IShellItemArray = arr?;
+            arr.BindToHandler(None, &BHID_SFUIObject)
+        }
+    }
+
     /// Context menu for `paths`, or the folder background menu of `folder`
     /// (New, Paste, …) when `paths` is empty, shown at `at`. Blocks until the menu closes.
     pub fn show_context_menu(folder: &Path, paths: &[PathBuf], at: ScreenPoint) -> windows::core::Result<()> {
         unsafe {
             let hwnd = GetActiveWindow();
-            let menu: IContextMenu = if paths.is_empty() {
-                let w = wide(folder.as_os_str());
-                let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None)?;
-                let sf: IShellFolder = item.BindToHandler(None, &BHID_SFObject)?;
-                sf.CreateViewObject(hwnd)?
-            } else {
-                let mut pidls: Vec<*mut ITEMIDLIST> = Vec::with_capacity(paths.len());
-                for p in paths {
-                    let w = wide(p.as_os_str());
-                    let mut pidl = std::ptr::null_mut();
-                    if SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).is_ok() {
-                        pidls.push(pidl);
-                    }
-                }
-                let consts: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| *p as _).collect();
-                let arr = SHCreateShellItemArrayFromIDLists(&consts);
-                for p in pidls {
-                    ILFree(Some(p));
-                }
-                let arr: IShellItemArray = arr?;
-                arr.BindToHandler(None, &BHID_SFUIObject)?
-            };
+            let menu = context_menu_of(folder, paths, hwnd)?;
 
             let hmenu = CreatePopupMenu()?;
             let mut flags = CMF_NORMAL | CMF_EXPLORE;
@@ -322,6 +382,47 @@ mod win {
             };
             let _ = DestroyMenu(hmenu);
             result
+        }
+    }
+
+    /// Native menus (Explorer's, from "Show more options") follow the app's theme:
+    /// dark or light whatever the system uses. Undocumented `uxtheme` exports, known
+    /// since Windows 10 1903; older builds keep their menus as they are.
+    pub fn set_menu_theme(dark: bool) {
+        #[repr(C)]
+        struct OsVersion {
+            size: u32,
+            major: u32,
+            minor: u32,
+            build: u32,
+            platform: u32,
+            service_pack: [u16; 128],
+        }
+        windows_core::link!("ntdll.dll" "system" fn RtlGetVersion(info: *mut OsVersion) -> i32);
+        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        unsafe {
+            let mut version = OsVersion {
+                size: std::mem::size_of::<OsVersion>() as u32,
+                major: 0,
+                minor: 0,
+                build: 0,
+                platform: 0,
+                service_pack: [0; 128],
+            };
+            if RtlGetVersion(&mut version) != 0 || version.major < 10 || version.build < 18362 {
+                return;
+            }
+            let Ok(uxtheme) = LoadLibraryW(w!("uxtheme.dll")) else { return };
+            // SetPreferredAppMode: 2 forces dark, 3 forces light.
+            if let Some(set_mode) = GetProcAddress(uxtheme, PCSTR(135 as *const u8)) {
+                let set_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(set_mode);
+                set_mode(if dark { 2 } else { 3 });
+            }
+            // FlushMenuThemes.
+            if let Some(flush) = GetProcAddress(uxtheme, PCSTR(136 as *const u8)) {
+                let flush: unsafe extern "system" fn() = std::mem::transmute(flush);
+                flush();
+            }
         }
     }
 
@@ -417,6 +518,9 @@ mod fallback {
         std::env::var_os("HOME").map(|h| vec![(KnownFolder::Home, PathBuf::from(h))]).unwrap_or_default()
     }
     pub fn open(_path: &Path) {}
+    pub fn shortcut_target(_path: &Path) -> Option<PathBuf> {
+        None
+    }
     pub fn show_properties(_path: &Path) {}
     pub fn cursor_pos() -> ScreenPoint {
         (0, 0)
@@ -424,12 +528,20 @@ mod fallback {
     pub fn root_window_at(_at: ScreenPoint) -> isize {
         0
     }
+    pub fn screen_to_client(_hwnd: isize, at: ScreenPoint) -> ScreenPoint {
+        at
+    }
+    pub fn activate_window(_hwnd: isize) {}
+    pub fn drag_distance() -> f32 {
+        4.
+    }
     pub fn move_window(_hwnd: isize, _origin: ScreenPoint, _anchor: ScreenPoint) {}
     pub fn set_window_origin(_hwnd: isize, _origin: ScreenPoint) {}
     pub fn disable_window(_hwnd: isize) {}
     pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf], _at: ScreenPoint) -> Result<(), ()> {
         Ok(())
     }
+    pub fn set_menu_theme(_dark: bool) {}
     pub fn https_get(_host: &str, _path: &str, _headers: &str, _max_len: usize) -> Result<(u16, Vec<u8>), String> {
         Err("HTTPS is only implemented on Windows".into())
     }

@@ -24,6 +24,12 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Install installer tooling
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          dotnet tool install --global wix --version 5.0.0
+
       - name: Package
         shell: pwsh
         run: |
@@ -31,6 +37,8 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/filemanager.exe dist/filemanager.exe
           Compress-Archive -Path target/release/filemanager.exe, README.md -DestinationPath "dist/$name.zip"
+          ./installer/build.ps1 -Format msi -SkipBuild -Tag "${{ github.ref_name }}"
+          ./installer/build.ps1 -Format nsis -SkipBuild -Tag "${{ github.ref_name }}"
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -40,3 +48,5 @@ jobs:
           files: |
             dist/filemanager.exe
             dist/*.zip
+            dist/*.msi
+            dist/*-setup.exe
