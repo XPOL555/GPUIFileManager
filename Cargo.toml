@@ -7,6 +7,10 @@ license = "MIT"
 repository ="https://github.com/XPOL555/GPUIFileManager"
 publish = false
 
+[features]
+# Settings in settings.json next to the exe instead of %APPDATA% (the release's portable exe and zip).
+portable = []
+
 [dependencies]
 gpui-kit = "0.7.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

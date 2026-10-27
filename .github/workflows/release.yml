@@ -30,15 +30,26 @@ jobs:
           choco install nsis --no-progress -y
           dotnet tool install --global wix --version 5.0.0
 
-      - name: Package
+      # The installers ship the installed build (settings in %APPDATA%), built above.
+      - name: Installers
         shell: pwsh
         run: |
-          $name = "filemanager-${{ github.ref_name }}-windows-x64"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/filemanager.exe dist/filemanager.exe
-          Compress-Archive -Path target/release/filemanager.exe, README.md -DestinationPath "dist/$name.zip"
           ./installer/build.ps1 -Format msi -SkipBuild -Tag "${{ github.ref_name }}"
           ./installer/build.ps1 -Format nsis -SkipBuild -Tag "${{ github.ref_name }}"
+
+      # Then the portable build (settings next to the exe) replaces it in target/release:
+      # only the root crate is rebuilt.
+      - name: Build portable
+        run: cargo build --release --locked --features portable
+
+      - name: Package portable
+        shell: pwsh
+        run: |
+          $name = "filemanager-${{ github.ref_name }}-windows-x64-portable"
+          Copy-Item target/release/filemanager.exe dist/filemanager-portable.exe
+          $zip = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/zip"
+          Copy-Item target/release/filemanager.exe, README.md $zip
+          Compress-Archive -Path "$zip/*" -DestinationPath "dist/$name.zip"
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -46,7 +57,7 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            dist/filemanager.exe
+            dist/filemanager-portable.exe
             dist/*.zip
             dist/*.msi
             dist/*-setup.exe

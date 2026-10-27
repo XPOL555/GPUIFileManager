@@ -6,6 +6,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `cargo run -- <path>`: start in `<path>` (default: user profile)
 - `cargo test`: unit tests (sorting, formatting, path completion, tree rows, selection, drop rules, file names, settings, themes, Cover Flow geometry). Some run the real shell in `%TEMP%`: copy / move / rename, a file sent to the Recycle Bin and restored, Explorer's menus read (`FM_DUMP_MENU=1` prints them)
 - `cargo build --release`: LTO build without a console window
+- `cargo build --release --features portable`: the portable build (settings next to the exe)
 - `cargo run --manifest-path tools/icon/Cargo.toml`: regenerate `assets/app.ico` and `assets/icon.png` from `assets/icon.svg` (standalone crate, not part of the app build)
 
 ## Layout
@@ -24,7 +25,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `src/drag_preview.rs`: floating pop-up window that follows a dragged tab outside the app's windows
 - `src/icons.rs`: native icons and thumbnails: requests from views, LIFO job queues, worker threads, byte-budgeted LRU caches of `RenderImage`
 - `src/shell_images.rs`: Win32 side of icons/thumbnails (system image list, `IShellItemImageFactory`), BGRA pixels
-- `src/settings.rs`: `Settings` global, JSON in `%APPDATA%\FileManager\settings.json`; `Settings::update` saves in the background and redraws
+- `src/settings.rs`: `Settings` global, JSON in `%APPDATA%\FileManager\settings.json`, or `settings.json` next to the exe in the portable build (feature `portable`; `%APPDATA%` again when its folder can't be written; `Location`, chosen once, shown in About); `Settings::update` saves in the background and redraws
 - `src/theme.rs`: dark and light (gpui-component defaults) and dimmed (built here, 5 accents), applied with `Theme::update` + `apply_config`
 - `src/i18n.rs`: UI strings (English, Italian). The language lives in `Settings`; `set_language` switches it live
 - `src/assets.rs`: asset source = gpui-kit's default icons + the extra Lucide icons listed in `icon_assets!`, and the full-color logo
@@ -63,6 +64,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - Every user-visible string goes through `i18n::t(cx)`, with both languages filled in. State that caches a string (input placeholders) must observe `Settings`.
 - The Recycle Bin is a tab path like any folder (`fs::RECYCLE_BIN`): use `fs::parent`, not `Path::parent`, and `list_folder`, not `fs::list`, for what a tab shows. Its items' `path` is the bin's `$R…` file and `origin` where they were: they never go to the clipboard, a drag or a rename; restores and permanent deletes go through `FileOp::Restore` / `Purge`, which drop the `$I…` files.
 - Drop zones have a `dnd::Target`: a folder (copy / move), the favorites heading (folders become favorites) or the Recycle Bin (delete to it).
+- Anything the app writes per user goes next to the settings file (`settings::Location`), so portable mode stays portable.
 - New settings: add a field to `Settings` (keep `#[serde(default)]` so old files still load) and change it only through `Settings::update`.
 - The title bar is a Windows `HTCAPTION` drag area: an unhandled left mouse-down there starts the native move loop and the click never arrives. Wrap interactive title bar elements in a div that calls `cx.stop_propagation()` on mouse-down.
 - Tab drag between windows: GPUI drags live inside one window, but Windows keeps the mouse captured by the source window, so moves and the release outside it still arrive there (`on_drag_move`, `on_mouse_up_out`). The window under the cursor comes from `WindowFromPoint`, matched against `OpenWindows`, else against the property `hooks` puts on the windows of other instances (they get the tab as JSON through `WM_COPYDATA`; bump `hooks::PROTOCOL` when `Tab` changes incompatibly). The drag preview window is disabled so it is looked through. Every window must be opened through `app::open_window` so it is registered and hooked.
@@ -71,8 +73,9 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - Commits: never add `Co-Authored-By: Claude …` or other AI attribution lines to commit messages or PRs. The author is Paolo only.
 
 ## Release
-- `.github/workflows/release.yml` builds on `windows-latest` only, and only on `v*` tags. It publishes a GitHub Release with `filemanager.exe` plus a zip.
+- `.github/workflows/release.yml` builds on `windows-latest` only, and only on `v*` tags. It publishes a GitHub Release with `filemanager-portable.exe` plus a zip of it.
 - The same job also builds the MSI and the NSIS setup with `installer/build.ps1` (NSIS from choco, WiX as a dotnet tool) and attaches them.
+- Two builds: the installers ship the installed one (settings in `%APPDATA%`), built first; then `--features portable` rebuilds the exe for `filemanager-portable.exe` and the portable zip. Keep that order: `build.ps1 -SkipBuild` takes whatever is in `target/release`.
 - To release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z`, `git push origin main vX.Y.Z`.
 
 ## Status / TODO

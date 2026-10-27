@@ -32,7 +32,7 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 - The app's own context menu, in Windows 11's style: a row of icons for cut, copy, rename and delete, then open, "Open with", and every entry Explorer's menu has (what apps add, "Send to", "New"…), with their icons. It slides open and works with the keyboard. "Show more options", or `Shift`+right-click, opens Explorer's own menu, dark or light with the app
 - Folder listing on background threads; stale results are discarded
 - Three themes (dark, dimmed with five accent colors, light), English and Italian UI, all switchable at runtime from the settings (☰ or `Ctrl+,`)
-- Settings saved in `%APPDATA%\FileManager\settings.json`
+- Settings saved in `%APPDATA%\FileManager\settings.json`, or next to the exe in the portable build (see [Portable](#portable))
 
 ## Keyboard shortcuts
 
@@ -67,9 +67,13 @@ Each [release](https://github.com/XPOL555/GPUIFileManager/releases) ships:
 
 - `filemanager-vX.Y.Z-windows-x64-setup.exe`: NSIS setup, per-machine (asks for admin), installs in `C:\Program Files\FileManager`
 - `filemanager-vX.Y.Z-windows-x64.msi`: the same as an MSI, handy for silent or managed deployment
-- `filemanager.exe` and a zip: portable, no installation
+- `filemanager-portable.exe`, and the same in `filemanager-vX.Y.Z-windows-x64-portable.zip`: portable, no installation (see below)
 
 Both installers add an all-users Start menu entry and an entry in Settings > Apps, and installing a newer version replaces the old one. Use one of the two, not both. Settings in `%APPDATA%` are kept on uninstall.
+
+### Portable
+
+The portable exe keeps its settings in `settings.json` next to itself instead of `%APPDATA%\FileManager\settings.json`, and keeps nothing else of its own in the user profile: put it in a folder of its own (a USB stick, a tools folder) and carry the folder around. If that folder can't be written (read-only media, a folder under Program Files without admin rights), it falls back to `%APPDATA%`. The installed app always uses `%APPDATA%`. The About dialog says which build is running and where its settings are. To build it yourself: `cargo build --release --features portable`.
 
 ```sh
 filemanager-vX.Y.Z-windows-x64-setup.exe /S              # silent (add /D=C:\path to change the folder)

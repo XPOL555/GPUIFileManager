@@ -5,6 +5,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, v_flex};
 
 use super::*;
+use crate::settings::{Location, Mode};
 use crate::update::{self, REPO_URL, UpdateStatus, VERSION};
 
 impl FileManager {
@@ -44,6 +45,14 @@ impl FileManager {
                     ),
             };
             let repo = REPO_URL.trim_start_matches("https://");
+            let location = Location::get().map(|l| {
+                let path = l.path.display().to_string();
+                match l.mode {
+                    Mode::User => (s.settings_user)(&path),
+                    Mode::Portable => (s.settings_portable)(&path),
+                    Mode::PortableReadOnly => (s.settings_portable_read_only)(&path),
+                }
+            });
 
             dialog.title(s.about).w(px(380.)).child(
                 v_flex()
@@ -64,6 +73,9 @@ impl FileManager {
                             .on_click(|_, _, cx| cx.open_url(REPO_URL))
                             .child(repo),
                     )
+                    .when_some(location, |el, location| {
+                        el.child(div().pt_2().text_xs().text_color(muted).text_center().child(location))
+                    })
                     .child(updates.items_center().pt_3()),
             )
         });

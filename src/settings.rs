@@ -1,11 +1,12 @@
-//! User settings, persisted as JSON in `%APPDATA%\FileManager\settings.json`.
+//! User settings, persisted as JSON in `%APPDATA%\FileManager\settings.json`, or in
+//! `settings.json` next to the exe in the portable build (see `Location`).
 //!
 //! Settings are a GPUI global. Every field has a default and unknown or missing
 //! fields are ignored, so old and new files keep loading as settings are added.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::*;
@@ -110,9 +111,73 @@ impl Global for Settings {}
 static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// The portable build (`--features portable`) keeps its settings next to the exe. The
+/// release ships it as its own exe and zip; the installers ship the other build.
+pub const PORTABLE: bool = cfg!(feature = "portable");
+
+/// Where the settings file is, chosen once per process.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Location {
+    pub path: PathBuf,
+    pub mode: Mode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    /// `%APPDATA%\FileManager`.
+    User,
+    /// The portable build: the exe's folder.
+    Portable,
+    /// The portable build in a folder that can't be written: back to `%APPDATA%`.
+    PortableReadOnly,
+}
+
+impl Location {
+    pub fn get() -> Option<&'static Self> {
+        static LOCATION: OnceLock<Option<Location>> = OnceLock::new();
+        LOCATION
+            .get_or_init(|| {
+                let exe_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+                let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+                Self::choose(PORTABLE, exe_dir.as_deref(), appdata.as_deref(), writable)
+            })
+            .as_ref()
+    }
+
+    fn choose(
+        portable: bool,
+        exe_dir: Option<&Path>,
+        appdata: Option<&Path>,
+        writable: impl Fn(&Path) -> bool,
+    ) -> Option<Self> {
+        let user = |mode| appdata.map(|dir| Self { path: dir.join("FileManager").join("settings.json"), mode });
+        if !portable {
+            return user(Mode::User);
+        }
+        match exe_dir {
+            Some(dir) if writable(dir) => Some(Self { path: dir.join("settings.json"), mode: Mode::Portable }),
+            _ => user(Mode::PortableReadOnly),
+        }
+    }
+}
+
+/// Whether files can be created in `dir` (a read-only medium, a folder under Program
+/// Files without admin rights…). The attributes don't say: only trying does.
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".filemanager-write-test-{}", std::process::id()));
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(file) => {
+            drop(file);
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 impl Settings {
     fn path() -> Option<PathBuf> {
-        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("FileManager").join("settings.json"))
+        Location::get().map(|l| l.path.clone())
     }
 
     /// Reads the settings file, falling back to defaults when it is missing or unreadable.
@@ -181,9 +246,37 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that glob includes gpui_kit's `test` macro, which shadows `#[test]`.
-    use super::{Language, Settings, ThemeChoice, ViewMode};
+    use super::{Language, Location, Mode, Settings, ThemeChoice, ViewMode, writable};
     use crate::fs::{Sort, SortKey};
     use std::path::Path;
+
+    #[test]
+    fn portable_build_picks_the_exe_folder() {
+        let root = std::env::temp_dir().join(format!("fm-portable-{}", std::process::id()));
+        let exe_dir = root.join("app");
+        let appdata = root.join("appdata");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let user = Some(Location { path: appdata.join("FileManager").join("settings.json"), mode: Mode::User });
+
+        // The installed build: %APPDATA%, even in a writable folder.
+        assert_eq!(Location::choose(false, Some(&exe_dir), Some(&appdata), |_| true), user);
+
+        assert_eq!(
+            Location::choose(true, Some(&exe_dir), Some(&appdata), writable),
+            Some(Location { path: exe_dir.join("settings.json"), mode: Mode::Portable })
+        );
+        // The probe doesn't stay behind.
+        assert_eq!(std::fs::read_dir(&exe_dir).unwrap().count(), 0);
+        // A folder that can't be written: back to %APPDATA%.
+        let fallback =
+            Some(Location { path: appdata.join("FileManager").join("settings.json"), mode: Mode::PortableReadOnly });
+        assert_eq!(Location::choose(true, Some(&exe_dir), Some(&appdata), |_| false), fallback);
+        assert_eq!(Location::choose(true, None, Some(&appdata), |_| true), fallback);
+        assert_eq!(Location::choose(true, Some(&exe_dir), None, |_| false), None);
+
+        assert!(!writable(&root.join("missing")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn missing_and_unknown_fields_fall_back() {
