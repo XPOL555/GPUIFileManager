@@ -7,6 +7,7 @@
 
 mod about;
 mod address_bar;
+mod bench;
 mod bin;
 mod cover_flow;
 mod files;
@@ -397,6 +398,8 @@ pub struct FileManager {
     drag_target: Option<tabs::DragTarget>,
     /// A tab from another window hovers this one: where it would land.
     incoming_tab: Option<tabs::IncomingTab>,
+    /// Timings for the benchmark (`FM_BENCH`); idle otherwise.
+    bench: bench::BenchMarks,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -559,9 +562,11 @@ impl FileManager {
             drag_preview: None,
             drag_target: None,
             incoming_tab: None,
+            bench: Default::default(),
             _subscriptions: subscriptions,
         };
         this.load(None, window, cx);
+        this.start_bench(window, cx);
         this
     }
 
@@ -653,6 +658,7 @@ impl FileManager {
         let media = if self.view() == ViewMode::CoverFlow { settings.media_filter } else { fs::MediaFilter::All };
         self.load_generation += 1;
         let generation = self.load_generation;
+        self.bench_loading(&path);
         self.error = None;
         self.rename = None;
         self.reload_timer = None;
@@ -701,6 +707,7 @@ impl FileManager {
                     t.refresh(cx);
                     row
                 });
+                this.bench_listed(this.table.read(cx).delegate().len());
                 this.sync_folder_sizes(true, false, cx);
                 if let Some(row) = row {
                     this.scroll_to_row(row, cx);
@@ -1189,5 +1196,6 @@ impl Render for FileManager {
                         .child(self.render_status(cx)),
                 ),
             )
+            .children(self.bench_marker())
     }
 }

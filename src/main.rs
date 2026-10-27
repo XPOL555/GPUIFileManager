@@ -3,6 +3,7 @@
 
 mod app;
 mod assets;
+mod bench;
 mod context_menu;
 mod dnd;
 mod drag_preview;

@@ -7,6 +7,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `cargo test`: unit tests (sorting, formatting, path completion, tree rows, selection, drop rules, file names, settings, themes, Cover Flow geometry). Some run the real shell in `%TEMP%`: copy / move / rename, a file sent to the Recycle Bin and restored, Explorer's menus read (`FM_DUMP_MENU=1` prints them)
 - `cargo build --release`: LTO build without a console window
 - `cargo build --release --features portable`: the portable build (settings next to the exe)
+- `pwsh bench/run.ps1`: benchmark (fixtures in `%TEMP%\fm-bench`, release build, FileManager and the other installed file managers) into `bench/results.json`; see `bench/README.md`
 - `cargo run --manifest-path tools/icon/Cargo.toml`: regenerate `assets/app.ico` and `assets/icon.png` from `assets/icon.svg` (standalone crate, not part of the app build)
 
 ## Layout
@@ -22,6 +23,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `src/app/folder_prefs.rs`: sorting (column header click, per tab), view and sorting kept per folder (`Settings::folders`, header / view button right click), the one-time snackbar offering it
 - `src/app/menu.rs`: the app's context menus (the selection, background, sidebar items, the Recycle Bin): our entries, slots where Explorer's entries go as they load, and Explorer's native menu ("Show more options")
 - `src/context_menu.rs`: the menu component: Windows 11 look (bigger rows, an icon row), submenus with a hover delay, keyboard, a slide as it opens (up when it opens above the cursor), clicks outside close it; `Slot`s filled later
+- `src/bench.rs`, `src/app/bench.rs`: opt-in benchmark hooks: with `FM_BENCH=<file>` set, listings painted and memory counters as JSON lines, and the steps of `FM_BENCH_STEPS` (open, view, scroll, wait, mem, quit) run in the first window. Nothing runs when unset
 - `src/drag_preview.rs`: floating pop-up window that follows a dragged tab outside the app's windows
 - `src/icons.rs`: native icons and thumbnails: requests from views, LIFO job queues, worker threads, byte-budgeted LRU caches of `RenderImage`
 - `src/shell_images.rs`: Win32 side of icons/thumbnails (system image list, `IShellItemImageFactory`), BGRA pixels
@@ -39,6 +41,7 @@ A lightweight Windows file manager in Rust. The goal is File Pilot-level speed w
 - `src/shell_menu.rs`: Explorer's context menu read entry by entry (labels, verbs, icons, submenus) on a thread of its own that keeps it until the app's menu closes and invokes the entry picked there; icons and entries that come late are sent after
 - `src/recycle.rs`: the Recycle Bin read from the disk (`X:\$Recycle.Bin\<SID>\$I…` / `$R…`), empty / full state, emptying
 - `installer/`: `filemanager.wxs` (WiX 5 MSI), `filemanager.nsi` (NSIS setup), both per-machine; `build.ps1` builds them into `dist/` (`-Format msi|nsis|all`, `-SkipBuild`). The MSI `UpgradeCode` must never change
+- `web-docs/`: public docs site (Nuxt 4 + Docus, bun); the Performance page is hidden in `web-docs/drafts/` until the benchmark is run again; benchmark data in `web-docs/data/bench.json` (the harness's `bench/results.json`). Deployed to GitHub Pages by `.github/workflows/docs.yml` on pushes to `main` touching `web-docs/**`. See `web-docs/README.md`
 - `build.rs` + `assets/app.rc`: embed `assets/app.ico` as icon resource 1 (Explorer shows it, GPUI loads it for every window)
 
 ## Rules

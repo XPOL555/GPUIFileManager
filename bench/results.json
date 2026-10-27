@@ -1,0 +1,402 @@
+{
+  "date": "2026-10-27",
+  "app_version": "0.3.0",
+  "commit": "ae23406-dirty",
+  "machine": {
+    "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
+    "ram_gb": 64.0,
+    "disk": "Samsung SSD 980 1TB (SSD, NVMe)",
+    "os": "Microsoft Windows 11 Pro 10.0.26300"
+  },
+  "scenarios": [
+    {
+      "id": "startup",
+      "name": "Start up, first listing painted (10-file folder)",
+      "unit": "ms",
+      "lower_is_better": true,
+      "notes": "From the OS creating the process to the end of painting the first frame that shows the listing (FM_BENCH hook).",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 596.7,
+          "min": 564.0,
+          "max": 638.8,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "list-1k",
+      "name": "Open a folder with 1k files",
+      "unit": "ms",
+      "lower_is_better": true,
+      "notes": "Navigation in a running window: from the request to the end of painting the frame that shows the listed, sorted rows (details view). Files were read recently, so the OS cache is warm.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 20.3,
+          "min": 19.2,
+          "max": 24.5,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "list-10k",
+      "name": "Open a folder with 10k files",
+      "unit": "ms",
+      "lower_is_better": true,
+      "notes": "Navigation in a running window: from the request to the end of painting the frame that shows the listed, sorted rows (details view). Files were read recently, so the OS cache is warm.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 31.9,
+          "min": 28.7,
+          "max": 34.1,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "list-100k",
+      "name": "Open a folder with 100k files",
+      "unit": "ms",
+      "lower_is_better": true,
+      "notes": "Navigation in a running window: from the request to the end of painting the frame that shows the listed, sorted rows (details view). Files were read recently, so the OS cache is warm.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 171.9,
+          "min": 150.6,
+          "max": 208.2,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "navigate-50",
+      "name": "Navigate through 50 folders of an Unreal-like project, one after the other",
+      "unit": "ms",
+      "lower_is_better": true,
+      "notes": "Total time for 50 navigations, each one starting as soon as the previous listing was painted (folders hold 10 to 31 items). Per navigation the listing is ready in 10-13 ms; the rest is waiting for the frame, which varied between runs (17 or 53 ms per folder; bench/raw has the per-folder events).",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 2703.8,
+          "min": 922.2,
+          "max": 2767.9,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-idle-private",
+      "name": "Memory (private bytes): Idle, 10-file folder open",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 161.8,
+          "min": 160.5,
+          "max": 162.2,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-idle-ws",
+      "name": "Memory (working set): Idle, 10-file folder open",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 96.1,
+          "min": 96.0,
+          "max": 96.9,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-after-100k-private",
+      "name": "Memory (private bytes): After opening the 100k-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 156.9,
+          "min": 156.7,
+          "max": 157.4,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-after-100k-ws",
+      "name": "Memory (working set): After opening the 100k-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 123.5,
+          "min": 122.8,
+          "max": 124.0,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-after-nav-private",
+      "name": "Memory (private bytes): After opening 1k, 10k, 100k files and navigating 50 folders",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 125.5,
+          "min": 124.5,
+          "max": 127.3,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-after-nav-ws",
+      "name": "Memory (working set): After opening 1k, 10k, 100k files and navigating 50 folders",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 95.7,
+          "min": 94.9,
+          "max": 97.7,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-images-xl-scrolled-private",
+      "name": "Memory (private bytes): Image folder (2 000 JPEGs) in XL icons, scrolled to the end",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 253.0,
+          "min": 247.4,
+          "max": 264.7,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "memory-images-xl-scrolled-ws",
+      "name": "Memory (working set): Image folder (2 000 JPEGs) in XL icons, scrolled to the end",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Read by the app itself (GetProcessMemoryInfo, the counters Get-Process reports) at that point of the scripted session.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 229.2,
+          "min": 220.6,
+          "max": 236.8,
+          "runs": 5
+        }
+      ]
+    },
+    {
+      "id": "fresh-start-private",
+      "name": "Memory (private bytes): fresh process opened on a 10-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 122.4,
+          "min": 121.9,
+          "max": 122.5,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 141.9,
+          "min": 141.3,
+          "max": 143.1,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 569.4,
+          "min": 568.3,
+          "max": 570.1,
+          "runs": 3
+        }
+      ]
+    },
+    {
+      "id": "fresh-start-ws",
+      "name": "Memory (working set): fresh process opened on a 10-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 91.1,
+          "min": 90.9,
+          "max": 91.8,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 194.9,
+          "min": 193.8,
+          "max": 195.0,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 386.0,
+          "min": 385.0,
+          "max": 386.2,
+          "runs": 3
+        }
+      ]
+    },
+    {
+      "id": "fresh-flat-100k-private",
+      "name": "Memory (private bytes): fresh process opened on the 100k-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 154.5,
+          "min": 153.5,
+          "max": 155.1,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 168.8,
+          "min": 167.9,
+          "max": 169.0,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 642.2,
+          "min": 639.9,
+          "max": 655.2,
+          "runs": 3
+        }
+      ]
+    },
+    {
+      "id": "fresh-flat-100k-ws",
+      "name": "Memory (working set): fresh process opened on the 100k-file folder",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 120.4,
+          "min": 120.2,
+          "max": 122.0,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 219.3,
+          "min": 219.1,
+          "max": 220.0,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 424.8,
+          "min": 423.6,
+          "max": 426.7,
+          "runs": 3
+        }
+      ]
+    },
+    {
+      "id": "fresh-images-private",
+      "name": "Memory (private bytes): fresh process opened on the image folder (2 000 JPEGs), default view",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 123.4,
+          "min": 123.0,
+          "max": 123.5,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 180.6,
+          "min": 180.0,
+          "max": 181.3,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 579.1,
+          "min": 578.5,
+          "max": 581.2,
+          "runs": 3
+        }
+      ]
+    },
+    {
+      "id": "fresh-images-ws",
+      "name": "Memory (working set): fresh process opened on the image folder (2 000 JPEGs), default view",
+      "unit": "MB",
+      "lower_is_better": true,
+      "notes": "Each app started on the folder and left until its private bytes stopped growing (2% over 3 s, 30 s at most), then read with Get-Process (all processes it started; Explorer runs as a separate explorer.exe with /separate). Memory only: the other apps expose no hook to time when a listing is painted. OneCommander 3.108 was tried and left out: launched with a folder it opened a window with no folder pane.",
+      "results": [
+        {
+          "app": "FileManager",
+          "median": 92.6,
+          "min": 92.5,
+          "max": 92.6,
+          "runs": 3
+        },
+        {
+          "app": "Windows Explorer",
+          "median": 210.8,
+          "min": 210.2,
+          "max": 211.2,
+          "runs": 3
+        },
+        {
+          "app": "File Pilot",
+          "median": 386.2,
+          "min": 386.1,
+          "max": 386.4,
+          "runs": 3
+        }
+      ]
+    }
+  ],
+  "method": "FileManager release build (LTO), 5 runs after one warm-up run, each a fresh process with a fresh settings folder and a 1280x800 window. Timings come from an opt-in hook (FM_BENCH, off in normal use) that logs when the frame showing a listing has been painted; a steps file drives the session (open folders, switch to XL icons, scroll). The app memory figures are its own GetProcessMemoryInfo counters at those points. The comparison starts each app as a fresh process on one folder (one uncounted warm-up launch per folder first), reads its memory from outside once it settles, then closes its window. Apps run with their installed settings (File Pilot reads its own through the known-folder API); its settings files are put back afterwards. Fixtures are generated by bench/fixtures.ps1."
+}
