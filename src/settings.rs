@@ -39,6 +39,12 @@ pub struct Settings {
     pub show_hidden: bool,
     /// File names end with their extension (shortcuts never show theirs, as in Explorer).
     pub show_extensions: bool,
+    /// The size column shows folder sizes, computed on demand for the listed folder's
+    /// subfolders (`folder_sizes`).
+    pub folder_sizes: bool,
+    /// Names of folders the size walks leave out (build caches, `.git`…); a size that
+    /// skipped one is shown as "≥".
+    pub size_exclusions: Vec<String>,
     /// What the cover flow view shows.
     pub media_filter: crate::fs::MediaFilter,
     /// Height of the covers over the list, in pixels.
@@ -60,6 +66,10 @@ pub struct FolderPrefs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<Sort>,
 }
+
+/// Folders the size walks skip unless the user says otherwise: build and package
+/// caches that are huge and nobody wants counted.
+pub const DEFAULT_EXCLUSIONS: [&str; 4] = ["Intermediate", "DerivedDataCache", ".git", "node_modules"];
 
 /// Windows paths are case-insensitive and may come with a trailing separator.
 fn folder_key(path: &Path) -> String {
@@ -83,6 +93,8 @@ impl Default for Settings {
             preview_pane: false,
             show_hidden: true,
             show_extensions: true,
+            folder_sizes: false,
+            size_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             media_filter: crate::fs::MediaFilter::default(),
             flow_height: 330.,
             folders: BTreeMap::new(),

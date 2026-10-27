@@ -117,7 +117,7 @@ impl FileManager {
     }
 
     /// Right click on a column header, or on the view button.
-    pub(super) fn show_keep_menu(&mut self, pref: Pref, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_keep_menu(&mut self, pref: Pref, _position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let s = i18n::t(cx);
         let prefs = Settings::get(cx).folder(&self.tab().path);
@@ -153,7 +153,7 @@ impl FileManager {
             );
         }
         if !items.is_empty() {
-            self.show_items(items, position, None, shell::cursor_pos(), window, cx);
+            self.show_items(items, None, shell::cursor_pos(), window, cx);
         }
     }
 

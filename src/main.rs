@@ -7,6 +7,7 @@ mod context_menu;
 mod dnd;
 mod drag_preview;
 mod file_ops;
+mod folder_sizes;
 mod fs;
 mod hooks;
 mod i18n;
@@ -34,6 +35,7 @@ fn main() {
         i18n::init(cx);
         theme::apply(cx);
         icons::init(cx);
+        folder_sizes::init(cx);
         app::bind_keys(cx);
         context_menu::bind_keys(cx);
         app::init(cx);

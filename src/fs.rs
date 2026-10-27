@@ -24,6 +24,19 @@ pub struct Entry {
     /// In the Recycle Bin: the folder the item was deleted from. Its `modified` is
     /// then the time it was deleted, and its `path` the file the bin keeps it in.
     pub origin: Option<Arc<Path>>,
+    /// A folder's computed size (`folder_sizes`), once known; `size` then holds its
+    /// bytes too, so sorting and sums work the same for files and folders.
+    pub folder_size: Option<FolderSize>,
+}
+
+/// The size of a folder's contents, as far as the walk got.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FolderSize {
+    pub bytes: u64,
+    /// Something was left out: an excluded folder, or one that couldn't be read.
+    pub partial: bool,
+    /// The walk finished; otherwise `bytes` is a running count.
+    pub done: bool,
 }
 
 /// Where the Recycle Bin is, as the shell parses it. Tabs and favorites hold it like a
@@ -99,7 +112,25 @@ impl Entry {
             ext: SharedString::default(),
             attrs: FILE_ATTRIBUTE_READONLY,
             origin: None,
+            folder_size: None,
         }
+    }
+
+    /// The size as shown: a file's always, a folder's once computed ("1.2 GB…" while
+    /// the walk runs, "≥ 1.2 GB" when something was skipped, "—" when nothing could be
+    /// read). Items in the Recycle Bin have the size the bin recorded.
+    pub fn size_label(&self) -> Option<String> {
+        if !self.is_dir || self.origin.is_some() {
+            return Some(format_size(self.size));
+        }
+        let s = self.folder_size?;
+        Some(match s {
+            FolderSize { done: false, bytes: 0, .. } => "…".to_string(),
+            FolderSize { done: false, bytes, .. } => format!("{}…", format_size(bytes)),
+            FolderSize { partial: true, bytes: 0, .. } => "—".to_string(),
+            FolderSize { partial: true, bytes, .. } => format!("≥ {}", format_size(bytes)),
+            FolderSize { bytes, .. } => format_size(bytes),
+        })
     }
 
     /// A Windows shortcut (`.lnk`).
@@ -161,6 +192,7 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
             ext,
             attrs: attributes(&meta),
             origin: None,
+            folder_size: None,
         });
     }
     Ok(out)
@@ -376,6 +408,22 @@ mod tests {
     fn sizes() {
         assert_eq!(format_size(512), "512 B");
         assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn folder_size_labels() {
+        let mut dir = Entry::folder(Path::new(r"C:\d"));
+        assert_eq!(dir.size_label(), None);
+        dir.folder_size = Some(FolderSize { bytes: 0, partial: false, done: false });
+        assert_eq!(dir.size_label().unwrap(), "…");
+        dir.folder_size = Some(FolderSize { bytes: 1536, partial: false, done: false });
+        assert_eq!(dir.size_label().unwrap(), "1.5 KB…");
+        dir.folder_size = Some(FolderSize { bytes: 1536, partial: true, done: true });
+        assert_eq!(dir.size_label().unwrap(), "≥ 1.5 KB");
+        dir.folder_size = Some(FolderSize { bytes: 0, partial: true, done: true });
+        assert_eq!(dir.size_label().unwrap(), "—");
+        dir.folder_size = Some(FolderSize { bytes: 1536, partial: false, done: true });
+        assert_eq!(dir.size_label().unwrap(), "1.5 KB");
     }
 }
 

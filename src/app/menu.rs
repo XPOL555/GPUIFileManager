@@ -48,6 +48,8 @@ impl MenuTarget {
 
 pub(super) struct OpenMenu {
     pub(super) menu: Entity<ContextMenu>,
+    /// The menu's own pop-up window, which can leave the app's window.
+    popup: WindowHandle<ContextMenu>,
     _dismiss: Subscription,
     /// Explorer's entries, on their way.
     _shell: Option<Task<()>>,
@@ -87,7 +89,7 @@ impl FileManager {
     pub(super) fn show_menu(
         &mut self,
         target: MenuTarget,
-        position: Point<Pixels>,
+        _position: Point<Pixels>,
         shift: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -96,7 +98,7 @@ impl FileManager {
         let bin = self.in_bin() || matches!(&target, MenuTarget::Sidebar { path, .. } if fs::is_recycle_bin(path));
         if bin {
             let items = self.bin_menu(&target, cx);
-            return self.show_items(items, position, None, at, window, cx);
+            return self.show_items(items, None, at, window, cx);
         }
         let (folder, paths) = self.shell_request(&target);
         if shift {
@@ -107,7 +109,7 @@ impl FileManager {
             MenuTarget::Background => self.background_menu_items(at, cx),
             MenuTarget::Sidebar { path, favorite } => self.sidebar_menu(path, *favorite, at, cx),
         };
-        self.show_items(items, position, Some((folder, paths)), at, window, cx);
+        self.show_items(items, Some((folder, paths)), at, window, cx);
     }
 
     /// The folder Explorer's menu is about, and its items (none: the folder's background).
@@ -119,26 +121,57 @@ impl FileManager {
         }
     }
 
-    /// Shows `items` at `position` (window coordinates). Explorer's entries for
+    /// Shows `items` at the cursor `at`. Explorer's entries for
     /// `shell` (a folder and its items) fill the menu's slots as they load.
     pub(super) fn show_items(
         &mut self,
         items: Vec<MenuItem>,
-        position: Point<Pixels>,
         shell: Option<(PathBuf, Vec<PathBuf>)>,
         at: shell::ScreenPoint,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let menu = cx.new(|cx| ContextMenu::new(items, position, window, cx));
-        let dismiss = cx.subscribe_in(&menu, window, |this, menu, _: &DismissEvent, window, cx| {
+        // The menu lives in a transparent pop-up window over the whole work area of the
+        // monitor, so it is not clipped by the app's window; like Windows' own menus, a
+        // click outside it only closes it.
+        let scale = window.scale_factor();
+        let (left, top, right, bottom) = shell::work_area_at(at);
+        let area = (right - left, bottom - top);
+        let viewport = size(px(area.0 as f32 / scale), px(area.1 as f32 / scale));
+        let position = point(px((at.0 - left) as f32 / scale), px((at.1 - top) as f32 / scale));
+        let owner = window.window_handle();
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(left as f32 / scale), px(top as f32 / scale)),
+                size: viewport,
+            })),
+            titlebar: None,
+            focus: true,
+            show: true,
+            kind: WindowKind::PopUp,
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
+            window_background: WindowBackgroundAppearance::Transparent,
+            ..Default::default()
+        };
+        let Ok(popup) = cx.open_window(options, |window, cx| {
+            cx.new(|cx| ContextMenu::new(items, position, viewport, owner, window, cx))
+        }) else {
+            return;
+        };
+        if let Ok(Some(hwnd)) = popup.update(cx, |_, window, _| shell::hwnd(window)) {
+            shell::set_window_rect(hwnd, (left, top), area);
+        }
+        let Ok(menu) = popup.entity(cx) else { return };
+        let dismiss = cx.subscribe_in(&menu, window, move |this, menu, _: &DismissEvent, window, cx| {
+            popup.update(cx, |_, popup, _| popup.remove_window()).ok();
             // A menu opened meanwhile (a right click elsewhere) stays.
             if this.context_menu.as_ref().is_some_and(|open| open.menu == *menu) {
-                // Back to the files, unless the command put the keyboard elsewhere.
-                let refocus = menu.read(cx).focus_handle(cx).is_focused(window);
                 this.context_menu = None;
-                if refocus {
-                    this.focus_view(window, cx);
+                // The app's window gets the keyboard back, unless the user left it.
+                if !menu.read(cx).deactivated() {
+                    window.activate_window();
                 }
                 cx.notify();
             }
@@ -147,8 +180,8 @@ impl FileManager {
             menu.update(cx, |menu, cx| menu.set_loading(true, cx));
             self.load_shell_entries(&menu, folder, paths, at, cx)
         });
-        menu.read(cx).focus_handle(cx).focus(window, cx);
-        self.context_menu = Some(OpenMenu { menu, _dismiss: dismiss, _shell: loading });
+        popup.update(cx, |menu, window, cx| menu.focus_handle(cx).focus(window, cx)).ok();
+        self.context_menu = Some(OpenMenu { menu, popup, _dismiss: dismiss, _shell: loading });
         cx.notify();
     }
 

@@ -152,6 +152,9 @@ pub struct Strings {
     /// "3 items selected".
     pub items_selected: fn(usize) -> String,
     pub invalid_name: &'static str,
+    pub name_taken_title: &'static str,
+    /// The name typed, and the numbered one offered instead.
+    pub name_taken_message: fn(&str, &str) -> String,
     pub clipboard_failed: &'static str,
     pub operation_failed: &'static str,
     /// Under dragged files; `%1` is the folder.
@@ -167,6 +170,9 @@ pub struct Strings {
     pub open_file_location: &'static str,
     pub files_section: &'static str,
     pub show_extensions: &'static str,
+    pub folder_sizes: &'static str,
+    pub size_exclusions: &'static str,
+    pub size_exclusions_hint: &'static str,
     pub recycle_bin: &'static str,
     pub restore: &'static str,
     pub restore_all: &'static str,
@@ -287,6 +293,10 @@ static EN: Strings = Strings {
     new_folder: "New folder",
     items_selected: |n| format!("{n} items selected"),
     invalid_name: "A name can't be empty or contain any of these characters: \\ / : * ? \" < > |",
+    name_taken_title: "This name is taken",
+    name_taken_message: |name, free| {
+        format!("There is already an item named “{name}” in this folder. Rename it to “{free}”?")
+    },
     clipboard_failed: "Couldn't use the clipboard",
     operation_failed: "The operation failed",
     drop_move: "Move to %1",
@@ -299,6 +309,9 @@ static EN: Strings = Strings {
     open_file_location: "Open file location",
     files_section: "Files",
     show_extensions: "Show file extensions",
+    folder_sizes: "Show folder sizes",
+    size_exclusions: "Folders left out (names, comma separated)",
+    size_exclusions_hint: "Sizes are computed when a folder is listed and shown as \"≥\" when something was left out.",
     recycle_bin: "Recycle Bin",
     restore: "Restore",
     restore_all: "Restore all items",
@@ -394,6 +407,10 @@ static IT: Strings = Strings {
     new_folder: "Nuova cartella",
     items_selected: |n| format!("{n} elementi selezionati"),
     invalid_name: "Un nome non può essere vuoto né contenere i caratteri: \\ / : * ? \" < > |",
+    name_taken_title: "Nome già in uso",
+    name_taken_message: |name, free| {
+        format!("In questa cartella c'è già un elemento chiamato “{name}”. Rinominarlo in “{free}”?")
+    },
     clipboard_failed: "Impossibile usare gli appunti",
     operation_failed: "L'operazione non è riuscita",
     drop_move: "Sposta in %1",
@@ -406,6 +423,9 @@ static IT: Strings = Strings {
     open_file_location: "Apri percorso file",
     files_section: "File",
     show_extensions: "Mostra estensioni dei file",
+    folder_sizes: "Mostra dimensione delle cartelle",
+    size_exclusions: "Cartelle escluse (nomi, separati da virgola)",
+    size_exclusions_hint: "Le dimensioni si calcolano quando una cartella viene elencata e sono indicate con \"≥\" se qualcosa è stato escluso.",
     recycle_bin: "Cestino",
     restore: "Ripristina",
     restore_all: "Ripristina tutti gli elementi",

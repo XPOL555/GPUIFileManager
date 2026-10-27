@@ -119,6 +119,7 @@ fn entry(info: Info, data: PathBuf, meta: &std::fs::Metadata) -> Entry {
         ext,
         attrs: attributes(meta),
         origin: Some(Arc::from(info.original.parent().unwrap_or(Path::new("")))),
+        folder_size: None,
     }
 }
 

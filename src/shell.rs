@@ -266,6 +266,27 @@ mod win {
         }
     }
 
+    /// The work area (screen pixels: left, top, right, bottom) of the monitor under `at`.
+    pub fn work_area_at((x, y): ScreenPoint) -> (i32, i32, i32, i32) {
+        unsafe {
+            let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let r = info.rcWork;
+                (r.left, r.top, r.right, r.bottom)
+            } else {
+                (x, y, x + 1024, y + 768)
+            }
+        }
+    }
+
+    /// Places a window exactly (screen pixels) without activating it.
+    pub fn set_window_rect(hwnd: isize, (x, y): ScreenPoint, (w, h): (i32, i32)) {
+        unsafe {
+            let _ = SetWindowPos(HWND(hwnd as _), None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
     /// A disabled window takes no input and `WindowFromPoint` looks through it.
     pub fn disable_window(hwnd: isize) {
         unsafe {
@@ -538,6 +559,10 @@ mod fallback {
     pub fn move_window(_hwnd: isize, _origin: ScreenPoint, _anchor: ScreenPoint) {}
     pub fn set_window_origin(_hwnd: isize, _origin: ScreenPoint) {}
     pub fn disable_window(_hwnd: isize) {}
+    pub fn work_area_at(at: ScreenPoint) -> (i32, i32, i32, i32) {
+        (at.0, at.1, at.0 + 1024, at.1 + 768)
+    }
+    pub fn set_window_rect(_hwnd: isize, _origin: ScreenPoint, _size: (i32, i32)) {}
     pub fn show_context_menu(_folder: &Path, _paths: &[PathBuf], _at: ScreenPoint) -> Result<(), ()> {
         Ok(())
     }

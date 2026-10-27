@@ -69,13 +69,15 @@ pub fn valid_name(name: &str) -> bool {
         && !name.ends_with([' ', '.'])
 }
 
-/// `base`, or `base (2)`, `base (3)`… : the first name not taken in `dir`.
-pub fn unique_name(dir: &Path, base: &str) -> String {
+/// `base`, or `base (2)`, `base (3)`… before the extension of a file (`a (2).txt`), as
+/// Explorer numbers them: the first name not taken in `dir`.
+pub fn unique_name(dir: &Path, base: &str, is_dir: bool) -> String {
     let taken = |name: &str| dir.join(name).symlink_metadata().is_ok();
     if !taken(base) {
         return base.to_string();
     }
-    (2..).map(|n| format!("{base} ({n})")).find(|name| !taken(name)).unwrap_or_else(|| base.to_string())
+    let (stem, ext) = base.split_at(stem_len(base, is_dir));
+    (2..).map(|n| format!("{stem} ({n}){ext}")).find(|name| !taken(name)).unwrap_or_else(|| base.to_string())
 }
 
 /// The part of a file name Explorer selects for renaming: the name without its
@@ -537,8 +539,11 @@ mod tests {
         let dir = crate::fs::test_temp_dir().join(format!("fm-unique-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("New folder")).unwrap();
         std::fs::create_dir_all(dir.join("New folder (2)")).unwrap();
-        assert_eq!(unique_name(&dir, "New folder"), "New folder (3)");
-        assert_eq!(unique_name(&dir, "Other"), "Other");
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+        assert_eq!(unique_name(&dir, "New folder", true), "New folder (3)");
+        assert_eq!(unique_name(&dir, "Other", true), "Other");
+        assert_eq!(unique_name(&dir, "a.txt", false), "a (2).txt");
+        assert_eq!(unique_name(&dir, "b.txt", false), "b.txt");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

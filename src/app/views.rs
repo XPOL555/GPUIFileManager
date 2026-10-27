@@ -368,7 +368,7 @@ impl FileManager {
                 .gap_1()
                 .child(detail(s.col_type, type_label(&e, cx)))
                 .when_some(e.origin.as_ref(), |d, origin| d.child(detail(s.col_origin, origin.to_string_lossy().into_owned())))
-                .when(!e.is_dir || e.origin.is_some(), |d| d.child(detail(s.col_size, fs::format_size(e.size))))
+                .when_some(e.size_label(), |d, size| d.child(detail(s.col_size, size)))
                 .child(detail(if e.origin.is_some() { s.col_deleted } else { s.col_modified }, fs::format_time(e.modified))),
         )
     }
@@ -382,10 +382,10 @@ impl FileManager {
         let show_extensions = Settings::get(cx).show_extensions;
         let left = match (&self.error, d.selection_len(), d.single_selected()) {
             (Some(err), _, _) => err.to_string(),
-            (None, _, Some(e)) if !e.is_dir => {
-                format!("{} · {}", e.display_name(show_extensions), fs::format_size(e.size))
-            }
-            (None, _, Some(e)) => e.name.to_string(),
+            (None, _, Some(e)) => match e.size_label() {
+                Some(size) => format!("{} · {}", e.display_name(show_extensions), size),
+                None => e.name.to_string(),
+            },
             (None, 0, None) => String::new(),
             (None, n, None) => match d.selected_size() {
                 0 => (s.items_selected)(n),

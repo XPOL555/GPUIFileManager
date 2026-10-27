@@ -632,9 +632,63 @@ impl FileManager {
         if unchanged || !file_ops::valid_name(&name) {
             return;
         }
+        self.rename_to(path, name, window, cx);
+    }
+
+    /// Renames `path` to `name`. When something else has that name already, asks to
+    /// number it instead (`a (2).txt`), as Explorer does: the shell would just fail.
+    fn rename_to(&mut self, path: PathBuf, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let free = cx.background_spawn({
+            let (path, name) = (path.clone(), name.clone());
+            async move {
+                let dir = path.parent()?;
+                // Only the case changes: the same item, which the shell renames fine.
+                let same = path.file_name().is_some_and(|old| old.to_string_lossy().to_lowercase() == name.to_lowercase());
+                (!same && dir.join(&name).symlink_metadata().is_ok())
+                    .then(|| file_ops::unique_name(dir, &name, path.is_dir()))
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let free = free.await;
+            this.update_in(cx, |fm, window, cx| match free {
+                None => fm.run_rename(path, name, window, cx),
+                Some(free) => fm.confirm_numbered_rename(path, name, free, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn run_rename(&mut self, path: PathBuf, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let op = FileOp::Rename { path, name };
         let reselect = Reselect::Paths(op.results());
         self.run_op(op, reselect, window, cx).detach();
+    }
+
+    fn confirm_numbered_rename(
+        &mut self,
+        path: PathBuf,
+        name: String,
+        free: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let s = i18n::t(cx);
+            let (this, path, free) = (this.clone(), path.clone(), free.clone());
+            dialog
+                .confirm()
+                .title(s.name_taken_title)
+                .description((s.name_taken_message)(&name, &free))
+                .ok_text(s.rename)
+                .cancel_text(s.cancel)
+                .on_ok(move |_, window, cx| {
+                    let (path, free) = (path.clone(), free.clone());
+                    this.update(cx, |fm, cx| fm.run_rename(path, free, window, cx)).ok();
+                    true
+                })
+        });
     }
 
     pub(super) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -726,7 +780,7 @@ impl FileManager {
         let dir = self.tab().path.clone();
         let base = i18n::t(cx).new_folder;
         let created = cx.background_spawn(async move {
-            let path = dir.join(file_ops::unique_name(&dir, base));
+            let path = dir.join(file_ops::unique_name(&dir, base, true));
             std::fs::create_dir(&path).map(|_| path)
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -830,6 +884,7 @@ impl FileManager {
                     t.refresh(cx);
                     row
                 });
+                fm.sync_folder_sizes(true, false, cx);
                 if let Some(row) = row {
                     fm.scroll_to_row(row, cx);
                 }

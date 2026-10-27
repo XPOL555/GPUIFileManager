@@ -16,7 +16,7 @@ use gpui_kit::*;
 
 use crate::dnd::{self, SharedZones, SpotKey};
 use crate::file_ops::CutFiles;
-use crate::fs::{self, Entry, MediaFilter, Sort, SortKey};
+use crate::fs::{self, Entry, FolderSize, MediaFilter, Sort, SortKey};
 use crate::i18n;
 use crate::icons::{self, IconSize};
 use crate::settings::Settings;
@@ -392,9 +392,57 @@ impl FileTable {
         }
     }
 
-    /// Total size of the selected files.
+    /// Total size of the selected files, and of the selected folders whose size is known.
     pub fn selected_size(&self) -> u64 {
-        self.selected.iter().filter_map(|k| self.entry_of(k)).filter(|e| !e.is_dir).map(|e| e.size).sum()
+        self.selected
+            .iter()
+            .filter_map(|k| self.entry_of(k))
+            .filter(|e| !e.is_dir || e.origin.is_some() || e.folder_size.is_some_and(|s| s.done))
+            .map(|e| e.size)
+            .sum()
+    }
+
+    // ---- folder sizes -------------------------------------------------------
+
+    /// The folders on the listing and in the expanded ones: those whose size is computed.
+    pub fn folders(&self) -> Vec<PathBuf> {
+        if self.is_bin() {
+            return Vec::new();
+        }
+        std::iter::once(&self.entries)
+            .chain(self.children.values())
+            .flatten()
+            .filter(|e| e.is_dir)
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
+    /// Takes the sizes `lookup` knows for the folders listed. Returns whether any
+    /// changed; the rows are sorted again when they are sorted by size.
+    pub fn fill_folder_sizes(&mut self, lookup: impl Fn(&Path) -> Option<FolderSize>) -> bool {
+        if self.is_bin() {
+            return false;
+        }
+        let mut changed = false;
+        let mut resort = false;
+        for e in std::iter::once(&mut self.entries).chain(self.children.values_mut()).flatten().filter(|e| e.is_dir) {
+            let size = lookup(&e.path);
+            if size != e.folder_size {
+                resort |= size.map(|s| s.bytes) != e.folder_size.map(|s| s.bytes);
+                e.folder_size = size;
+                e.size = size.map_or(0, |s| s.bytes);
+                changed = true;
+            }
+        }
+        if resort && self.sort.key == SortKey::Size {
+            self.rebuild();
+        }
+        changed
+    }
+
+    /// Forgets every folder size (the sizes were turned off, or the exclusions changed).
+    pub fn clear_folder_sizes(&mut self) {
+        self.fill_folder_sizes(|_| None);
     }
 
     pub fn cursor(&self) -> Option<usize> {
@@ -768,8 +816,8 @@ impl TableDelegate for FileTable {
             SortKey::Type if e.origin.is_some() => e.origin.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             SortKey::Type => type_label(&e, cx),
             SortKey::Modified => fs::format_time(e.modified),
-            SortKey::Size if e.is_dir => String::new(),
-            SortKey::Size => fs::format_size(e.size),
+            // A folder's size is on its way, or the sizes are off.
+            SortKey::Size => e.size_label().unwrap_or_else(|| if Settings::get(cx).folder_sizes { "…".into() } else { String::new() }),
         };
         div().truncate().text_color(muted).child(text).into_any_element()
     }
@@ -836,6 +884,7 @@ mod tests {
             ext: Default::default(),
             attrs: 0,
             origin: None,
+            folder_size: None,
         }
     }
 

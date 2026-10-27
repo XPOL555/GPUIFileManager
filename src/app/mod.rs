@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dnd::{SharedZones, SpotKey};
 use crate::drag_preview::DragPreviewWindow;
+use crate::folder_sizes;
 use crate::hooks::{self, HookEvent};
 use crate::i18n::{self, Language};
 use crate::settings::Settings;
@@ -199,6 +200,17 @@ impl Tab {
 
     fn title(&self, cx: &App) -> SharedString {
         folder_name(&self.path, cx).into()
+    }
+}
+
+/// The size exclusions as typed: names separated by commas.
+fn parse_exclusions(text: &str) -> Vec<String> {
+    text.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect()
+}
+
+impl Drop for FileManager {
+    fn drop(&mut self) {
+        self.size_cancel.cancel();
     }
 }
 
@@ -370,6 +382,12 @@ pub struct FileManager {
     /// A reload after changes in the folder, waiting for more changes to settle.
     reload_timer: Option<Task<()>>,
     error_timer: Option<Task<()>>,
+    /// The folder size walks of the listing on screen, cancelled when it is left.
+    size_cancel: folder_sizes::Cancel,
+    /// The folder size settings the listing follows, to notice when they change.
+    size_config: (bool, Vec<String>),
+    /// The exclusions editor of the settings dialog.
+    exclusions_input: Entity<InputState>,
 
     // Tab dragging (see `tabs`).
     tab_strip: Rc<Cell<Bounds<Pixels>>>,
@@ -421,6 +439,9 @@ impl FileManager {
         });
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(i18n::t(cx).filter));
         let path_input = cx.new(|cx| InputState::new(window, cx));
+        let exclusions_input = cx.new(|cx| InputState::new(window, cx));
+        exclusions_input.update(cx, |input, cx| input.set_value(settings.size_exclusions.join(", "), window, cx));
+        let sizes = folder_sizes::entity(cx);
         let mode = tabs[0].view;
         let view_slider =
             cx.new(|_| SliderState::new().min(0.).max((ViewMode::ALL.len() - 1) as f32).step(1.).default_value(mode.slider_value()));
@@ -450,6 +471,18 @@ impl FileManager {
                 _ => {}
             }),
             cx.subscribe_in(&path_input, window, Self::on_path_input_event),
+            // The exclusions apply when the editor is left: every change would start
+            // the walks over.
+            cx.subscribe_in(&exclusions_input, window, |this, input, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let exclusions = parse_exclusions(&input.read(cx).value());
+                    Settings::update(cx, |s| s.size_exclusions = exclusions);
+                    this.apply_list_settings(cx);
+                }
+            }),
+            cx.subscribe_in(&sizes, window, |this, _, ev: &folder_sizes::SizesChanged, _, cx| {
+                this.sync_folder_sizes(ev.requeue, false, cx);
+            }),
             cx.subscribe_in(&view_slider, window, |this, _, ev: &SliderEvent, window, cx| {
                 if let SliderEvent::Change(value) = ev {
                     this.set_view_mode(ViewMode::from_slider(value.end()), window, cx);
@@ -458,12 +491,22 @@ impl FileManager {
             cx.observe_global_in::<Settings>(window, |this, window, cx| {
                 let placeholder = i18n::t(cx).filter;
                 this.filter.update(cx, |f, cx| f.set_placeholder(placeholder, window, cx));
+                // Changed in another window: the editor follows.
+                let exclusions = Settings::get(cx).size_exclusions.clone();
+                this.exclusions_input.update(cx, |input, cx| {
+                    if parse_exclusions(&input.value()) != exclusions {
+                        input.set_value(exclusions.join(", "), window, cx);
+                    }
+                });
                 this.apply_list_settings(cx);
             }),
         ];
 
         // The Recycle Bin's icon: empty or full.
         bin::check_bin(cx);
+        sizes.update(cx, |sizes, _| {
+            sizes.configure(settings.folder_sizes, &settings.size_exclusions);
+        });
         let mut this = Self {
             focus: cx.focus_handle(),
             hwnd: shell::hwnd(window).unwrap_or(0),
@@ -508,6 +551,9 @@ impl FileManager {
             dragging_folders: false,
             reload_timer: None,
             error_timer: None,
+            size_cancel: folder_sizes::Cancel::default(),
+            size_config: (settings.folder_sizes, settings.size_exclusions.clone()),
+            exclusions_input,
             tab_strip: Rc::default(),
             tab_bounds: Rc::default(),
             drag_preview: None,
@@ -610,6 +656,9 @@ impl FileManager {
         self.error = None;
         self.rename = None;
         self.reload_timer = None;
+        // The size walks of the folder being left.
+        self.size_cancel.cancel();
+        self.size_cancel = folder_sizes::Cancel::default();
         // The Recycle Bin is always watched (`bin_watch`).
         self.watch = if fs::is_recycle_bin(&path) { None } else { hooks::watch(self.hwnd, &path) };
         self.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -652,6 +701,7 @@ impl FileManager {
                     t.refresh(cx);
                     row
                 });
+                this.sync_folder_sizes(true, false, cx);
                 if let Some(row) = row {
                     this.scroll_to_row(row, cx);
                 }
@@ -690,6 +740,7 @@ impl FileManager {
                         t.delegate_mut().set_children(path, entries);
                         t.refresh(cx);
                     });
+                    this.sync_folder_sizes(true, false, cx);
                 }
             })
             .ok();
@@ -764,6 +815,8 @@ impl FileManager {
     /// Lists the folder again, keeping the selection, the filter and the scroll position.
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
         self.drives = shell::drives();
+        // Folder sizes are walked again, even the ones known.
+        self.sync_folder_sizes(true, true, cx);
         self.reload(files::Reselect::Keep, window, cx).detach();
     }
 
@@ -840,7 +893,7 @@ impl FileManager {
     /// What the listing shows follows the settings: hidden files, and the media filter
     /// of the cover flow view.
     fn apply_list_settings(&mut self, cx: &mut Context<Self>) {
-        let settings = Settings::get(cx);
+        let settings = Settings::get(cx).clone();
         let show_hidden = settings.show_hidden;
         let media = if self.view() == ViewMode::CoverFlow { settings.media_filter } else { fs::MediaFilter::All };
         let changed = {
@@ -857,11 +910,50 @@ impl FileManager {
             self.scroll_to_cursor(cx);
             cx.notify();
         }
+        let size_config = (settings.folder_sizes, settings.size_exclusions.clone());
+        if self.size_config != size_config {
+            self.size_config = size_config.clone();
+            folder_sizes::entity(cx).update(cx, |sizes, _| {
+                sizes.configure(size_config.0, &size_config.1);
+            });
+            self.table.update(cx, |t, cx| {
+                t.delegate_mut().clear_folder_sizes();
+                t.refresh(cx);
+            });
+            self.sync_folder_sizes(true, false, cx);
+            cx.notify();
+        }
+    }
+
+    /// Shows the folder sizes known for the listed folders and, when `request`, asks
+    /// for the missing ones (all of them again when `force`).
+    fn sync_folder_sizes(&mut self, request: bool, force: bool, cx: &mut Context<Self>) {
+        if !Settings::get(cx).folder_sizes || fs::is_recycle_bin(&self.tab().path) {
+            return;
+        }
+        let sizes = folder_sizes::entity(cx);
+        if request {
+            let folders = self.table.read(cx).delegate().folders();
+            if !folders.is_empty() {
+                sizes.update(cx, |sizes, _| sizes.request(folders, &self.size_cancel, force));
+            }
+        }
+        let changed = self.table.update(cx, |t, cx| {
+            let changed = t.delegate_mut().fill_folder_sizes(|path| sizes.read(cx).lookup(path));
+            if changed {
+                t.refresh(cx);
+            }
+            changed
+        });
+        if changed {
+            cx.notify();
+        }
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         // The builder runs on every render, so the dialog follows changes live.
-        window.open_dialog(cx, |dialog, _, cx| {
+        let exclusions_input = self.exclusions_input.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
             let s = i18n::t(cx);
             let settings = Settings::get(cx).clone();
             let section = |label: &'static str, cx: &App| {
@@ -926,7 +1018,18 @@ impl FileManager {
                                 .label(s.show_extensions)
                                 .checked(settings.show_extensions)
                                 .on_click(|checked, _, cx| Settings::update(cx, |s| s.show_extensions = *checked)),
-                        ),
+                        )
+                        .child(
+                            Switch::new("folder-sizes")
+                                .label(s.folder_sizes)
+                                .checked(settings.folder_sizes)
+                                .on_click(|checked, _, cx| Settings::update(cx, |s| s.folder_sizes = *checked)),
+                        )
+                        .when(settings.folder_sizes, |d| {
+                            d.child(div().pt_1().text_xs().text_color(cx.theme().muted_foreground).child(s.size_exclusions))
+                                .child(gpui_kit::component::input::Input::new(&exclusions_input).small())
+                                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(s.size_exclusions_hint))
+                        }),
                 )
         });
     }
@@ -1086,6 +1189,5 @@ impl Render for FileManager {
                         .child(self.render_status(cx)),
                 ),
             )
-            .when_some(self.context_menu.as_ref(), |d, m| d.child(m.menu.clone()))
     }
 }

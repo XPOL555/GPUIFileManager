@@ -214,6 +214,8 @@ pub struct ContextMenu {
     items: Vec<MenuItem>,
     /// Where it opened, in window coordinates.
     position: Point<Pixels>,
+    /// The window the menu serves: commands run there, the menu has a window of its own.
+    owner: AnyWindowHandle,
     /// It opens above the position (not enough room below).
     upward: bool,
     serial: usize,
@@ -227,6 +229,8 @@ pub struct ContextMenu {
     /// Where each level was drawn, for clicks outside.
     panels: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     dismissed: bool,
+    /// It closed because its window lost the activation (the user went elsewhere).
+    deactivated: bool,
     /// Entries are still being read (Explorer's): a progress bar at the bottom says so.
     loading: bool,
     _subscriptions: Vec<Subscription>,
@@ -241,11 +245,19 @@ impl Focusable for ContextMenu {
 }
 
 impl ContextMenu {
-    /// A menu at `position` (window coordinates). Show it by rendering the entity; it
-    /// emits `DismissEvent` once done.
-    pub fn new(mut items: Vec<MenuItem>, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// A menu at `position` (coordinates of its window, which covers a screen of
+    /// `viewport` size, so the menu can leave the app's window). Make it the root view
+    /// of a pop-up window; it emits `DismissEvent` once done. Commands run in `owner`.
+    pub fn new(
+        mut items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        viewport: Size<Pixels>,
+        owner: AnyWindowHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let height: f32 = shown(&items).iter().map(|&ix| items[ix].height()).sum::<f32>() + 2. * PADDING + 2.;
-        let room_below = f32::from(window.viewport_size().height - position.y);
+        let room_below = f32::from(viewport.height - position.y);
         let upward = height > room_below - 8. && f32::from(position.y) > room_below;
         // The icon row stays next to the pointer, as in Windows 11.
         if upward && matches!(items.first(), Some(MenuItem::Toolbar(_))) {
@@ -258,6 +270,7 @@ impl ContextMenu {
             cx.on_blur(&focus, window, |this, _, cx| this.dismiss(cx)),
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
+                    this.deactivated = true;
                     this.dismiss(cx);
                 }
             }),
@@ -266,6 +279,7 @@ impl ContextMenu {
             focus,
             items,
             position,
+            owner,
             upward,
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             selected: vec![None],
@@ -273,9 +287,14 @@ impl ContextMenu {
             pending: None,
             panels: Rc::default(),
             dismissed: false,
+            deactivated: false,
             loading: false,
             _subscriptions: subscriptions,
         }
+    }
+
+    pub fn deactivated(&self) -> bool {
+        self.deactivated
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
@@ -406,9 +425,15 @@ impl ContextMenu {
         cx.notify();
     }
 
+    /// Runs a command in the window the menu serves.
+    fn run(&self, handler: &Handler, cx: &mut App) {
+        let handler = handler.clone();
+        self.owner.update(cx, |_, window, cx| handler(window, cx)).ok();
+    }
+
     /// Entry `ix` of `level` picked: its submenu opens, or its command runs and the
     /// menu closes.
-    fn activate(&mut self, level: usize, ix: usize, from_keyboard: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate(&mut self, level: usize, ix: usize, from_keyboard: bool, cx: &mut Context<Self>) {
         let Some(entry) = self.level(level).get(ix).and_then(MenuItem::entry).filter(|e| !e.disabled) else { return };
         if entry.has_submenu() {
             self.pending = None;
@@ -418,7 +443,7 @@ impl ContextMenu {
         let handler = entry.handler.clone();
         self.dismiss(cx);
         if let Some(handler) = handler {
-            handler(window, cx);
+            self.run(&handler, cx);
         }
     }
 
@@ -466,12 +491,12 @@ impl ContextMenu {
         self.select_end(true, cx);
     }
 
-    fn on_right(&mut self, _: &MenuRight, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_right(&mut self, _: &MenuRight, _: &mut Window, cx: &mut Context<Self>) {
         let level = self.deepest();
         if let Some(ix) = self.selected[level]
             && self.level(level).get(ix).and_then(MenuItem::entry).is_some_and(MenuEntry::has_submenu)
         {
-            self.activate(level, ix, true, window, cx);
+            self.activate(level, ix, true, cx);
         }
     }
 
@@ -483,10 +508,10 @@ impl ContextMenu {
         }
     }
 
-    fn on_confirm(&mut self, _: &MenuConfirm, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_confirm(&mut self, _: &MenuConfirm, _: &mut Window, cx: &mut Context<Self>) {
         let level = self.deepest();
         if let Some(ix) = self.selected[level] {
-            self.activate(level, ix, true, window, cx);
+            self.activate(level, ix, true, cx);
         }
     }
 
@@ -516,6 +541,7 @@ impl ContextMenu {
             .max_w(px(MAX_WIDTH))
             .max_h(window.viewport_size().height - px(16.))
             .overflow_y_scroll()
+            .font_family(theme.font_family.clone())
             .p(px(PADDING))
             .bg(theme.popover)
             .text_color(theme.popover_foreground)
@@ -585,9 +611,9 @@ impl ContextMenu {
             .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
             .when(button.disabled, |d| d.opacity(0.35))
             .when(!button.disabled, |d| {
-                d.cursor_pointer().hover(move |d| d.bg(hover)).on_click(cx.listener(move |this, _, window, cx| {
+                d.cursor_pointer().hover(move |d| d.bg(hover)).on_click(cx.listener(move |this, _, _, cx| {
                     this.dismiss(cx);
-                    handler(window, cx);
+                    this.run(&handler, cx);
                 }))
             })
             .into_any_element()
@@ -624,7 +650,7 @@ impl ContextMenu {
                 }
             }))
             .when(!entry.disabled, |d| {
-                d.on_click(cx.listener(move |this, _, window, cx| this.activate(level, ix, false, window, cx)))
+                d.on_click(cx.listener(move |this, _, _, cx| this.activate(level, ix, false, cx)))
             })
             .when(open, |d| d.child(self.render_submenu(level + 1, window, cx)))
             .into_any_element()
