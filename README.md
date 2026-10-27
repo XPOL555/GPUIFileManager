@@ -10,6 +10,8 @@ The UI is built with [gpui-kit](https://crates.io/crates/gpui-kit), which packag
 
 > **Status:** early work in progress.
 
+**Docs and benchmarks:** <https://xpol555.github.io/GPUIFileManager/> (sources in [`web-docs/`](web-docs/README.md)).
+
 ## Features
 
 - View modes like File Pilot: details, tree, list, and medium, large and extra large icons. Switch with `Ctrl` + mouse wheel or from the info bar at the bottom right

@@ -1,0 +1,14 @@
+/* Imported by Docus after Tailwind and Nuxt UI. @nuxt/fonts downloads the families named here at build time. */
+@theme {
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+
+/* No search on the landing page (the header's center is empty there, see AppHeaderCenter.vue). */
+html[data-landing] header [data-slot="right"] button[aria-label^="Search"] {
+  display: none;
+}
