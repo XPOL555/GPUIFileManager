@@ -3,8 +3,8 @@
 
 use std::rc::Rc;
 
-use gpui_kit::App;
-use gpui_kit::component::{Theme, ThemeConfig, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::{App, rgb, white};
 use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
@@ -35,7 +35,13 @@ pub enum Accent {
 }
 
 impl Accent {
-    pub const ALL: [Accent; 5] = [Accent::Blue, Accent::Violet, Accent::Teal, Accent::Amber, Accent::Rose];
+    pub const ALL: [Accent; 5] = [
+        Accent::Blue,
+        Accent::Violet,
+        Accent::Teal,
+        Accent::Amber,
+        Accent::Rose,
+    ];
 
     /// 0xRRGGBB
     pub fn rgb(self) -> u32 {
@@ -57,8 +63,22 @@ pub fn apply(cx: &mut App) {
         ThemeChoice::Light => ThemeRegistry::global(cx).default_light_theme().clone(),
         ThemeChoice::Dimmed => Rc::new(dimmed(settings.accent)),
     };
+
     Theme::update(cx, |theme| theme.apply_config(&config));
+    patch_dark_danger_colors(config.mode, cx);
     crate::shell::set_menu_theme(config.mode.is_dark());
+    cx.refresh_windows();
+}
+
+/// Workaround for gpui-component's default dark theme, where the window
+/// TitleBar close button renders with abnormal danger colors on hover.
+fn patch_dark_danger_colors(theme_mode: ThemeMode, cx: &mut App) {
+    if matches!(theme_mode, ThemeMode::Dark) {
+        let theme = Theme::global_mut(cx);
+        theme.colors.danger_foreground = white();
+        theme.colors.danger = rgb(0x00e8_1123).into();
+        theme.colors.danger_active = rgb(0x8b_0a_14).into();
+    }
 }
 
 /// Blue-grey dark theme, in gpui-component's theme file format. Colors that are not
